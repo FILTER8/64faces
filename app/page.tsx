@@ -32,10 +32,10 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
   const [position, setPosition] = useState(0);
   const [outcome, setOutcome] = useState<"HIT" | "MISS" | null>(null);
   const [removed, setRemoved] = useState<number[]>([]);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const timers = useRef<number[]>([]);
 
   const clearTimers = useCallback(() => {
-    timers.current.forEach(clearTimeout);
+    timers.current.forEach((timer) => window.clearTimeout(timer));
     timers.current = [];
   }, []);
 
