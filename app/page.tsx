@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Face } from "@/lib/shared";
 import { BLACK, CONTRACT, GREEN, TRAIT_NAMES } from "@/lib/shared";
 
@@ -21,6 +21,134 @@ function PixelFace({ face, className = "" }: { face: Face | null; className?: st
           <span key={`${y}-${x}`} className="pixel" style={{ background: row & (1 << (7 - x)) ? face.foreground : face.background }} />
         ))
       )}
+    </div>
+  );
+}
+
+// FACE64: keep the same on-chain face after a hit, removing one pixel.
+// On a miss (or when all lit pixels are cleared), advance to another face.
+function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
+  const [phase, setPhase] = useState<"idle" | "spinning" | "slowing" | "finished" | "changing">("idle");
+  const [position, setPosition] = useState(0);
+  const [outcome, setOutcome] = useState<"HIT" | "MISS" | null>(null);
+  const [removed, setRemoved] = useState<number[]>([]);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clearTimers = useCallback(() => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "spinning") return;
+    const interval = window.setInterval(() => {
+      setPosition((current) => (current + 1) % 64);
+    }, 70);
+    return () => window.clearInterval(interval);
+  }, [phase]);
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const initialLit = face ? face.rows.reduce((sum, row) => {
+    let bits = row;
+    while (bits) { sum += bits & 1; bits >>>= 1; }
+    return sum;
+  }, 0) : 0;
+  const remaining = initialLit - removed.length;
+
+  function toggleGame() {
+    if (!face || phase === "slowing" || phase === "changing") return;
+
+    if (phase !== "spinning") {
+      clearTimers();
+      setOutcome(null);
+      setPosition((current) => (current + 1) % 64);
+      setPhase("spinning");
+      return;
+    }
+
+    // Roulette-style easing: the result is determined at the FINAL stop,
+    // against the currently remaining pixels, not the original image.
+    setPhase("slowing");
+    const delays = [75, 90, 110, 140, 180, 235, 310, 410, 550];
+    const finalPosition = (position + delays.length) % 64;
+    const row = Math.floor(finalPosition / 8);
+    const col = finalPosition % 8;
+    const litOnChain = (face.rows[row] & (1 << (7 - col))) !== 0;
+    const hit = litOnChain && !removed.includes(finalPosition);
+    let elapsed = 0;
+
+    delays.forEach((delay, index) => {
+      elapsed += delay;
+      timers.current.push(window.setTimeout(() => {
+        setPosition((position + index + 1) % 64);
+        if (index !== delays.length - 1) return;
+
+        setOutcome(hit ? "HIT" : "MISS");
+        if (hit) {
+          // Remove ONLY the pixel we landed on. Do not change the token.
+          setRemoved((current) => [...current, finalPosition]);
+          if (remaining === 1) {
+            setPhase("changing");
+            timers.current.push(window.setTimeout(onMiss, 1250));
+          } else {
+            setPhase("finished");
+          }
+        } else {
+          // Bust: briefly show the result, then load the next on-chain face.
+          setPhase("changing");
+          timers.current.push(window.setTimeout(onMiss, 1250));
+        }
+      }, elapsed));
+    });
+  }
+
+  const scanning = phase === "spinning" || phase === "slowing";
+  return (
+    <div className="mini-game">
+      <div className="mini-game-screen">
+        <div className="mini-game-topline">
+          <span>FACE64 / ONE BUTTON</span>
+          <span>{face ? `FACE #${face.id}` : "LOADING FACE"}</span>
+        </div>
+        <div className="mini-game-board-frame" style={{ border: `4px solid ${GREEN}`, padding: 8, background: BLACK, width: "min(100%, 344px)", margin: "0 auto", boxSizing: "border-box" }}>
+          <div className="mini-game-board" role="img" aria-label={face ? `Face ${face.id}: ${remaining} lit pixels left` : "Loading face"} style={{ background: BLACK, width: "100%", margin: 0, padding: 0, border: 0, gap: 0 }}>
+            {face && face.rows.flatMap((row, y) =>
+              Array.from({ length: 8 }, (_, x) => {
+                const index = y * 8 + x;
+                const lit = (row & (1 << (7 - x))) !== 0 && !removed.includes(index);
+                const active = (scanning || outcome !== null) && position === index;
+                const baseColor = lit ? face.foreground : face.background;
+                // A cursor is the exact color inverse of the pixel underneath.
+                // Keep it visible on EVERY step (no CSS blink / invisible frames).
+                const displayColor = active
+                  ? (baseColor === GREEN ? BLACK : GREEN)
+                  : baseColor;
+                return (
+                  <span
+                    key={`${x}-${y}`}
+                    className="mini-game-pixel"
+                    style={{ backgroundColor: displayColor, display: "block" }}
+                  />
+                );
+              })
+            )}
+          </div>
+        </div>
+        <div className="mini-game-topline" style={{ marginTop: 14, marginBottom: 0 }}>
+          <span>PIXELS LEFT {remaining} / {initialLit}</span>
+          <span>HITS {removed.length}</span>
+        </div>
+        <div className="mini-game-controls">
+          <button type="button" className="outline-btn mini-game-button" onClick={toggleGame} disabled={!face || phase === "slowing" || phase === "changing"}>
+            {phase === "spinning" ? "■ STOP" : phase === "slowing" ? "STOPPING…" : phase === "changing" ? "NEXT FACE…" : outcome ? "▶ START AGAIN" : "▶ START"}
+          </button>
+          <span className="mini-game-result" role="status" aria-live="polite">
+            {phase === "spinning" ? "SCANNING…" : phase === "slowing" ? "SLOWING DOWN…" : outcome === "HIT" ? (phase === "changing" ? "CLEARED / NEXT FACE…" : "HIT / PIXEL REMOVED") : outcome === "MISS" ? "MISS / NEW FACE…" : "STOP ON A LIT PIXEL"}
+          </span>
+        </div>
+      </div>
+      <p className="mini-game-hint">HIT A LIT PIXEL TO REMOVE IT AND KEEP PLAYING THE SAME FACE. MISS TO LOAD A NEW TOKEN. $OCH GAME TOKEN INTEGRATION IS A FUTURE EXPERIMENT.</p>
     </div>
   );
 }
@@ -367,8 +495,9 @@ export default function Home() {
           <a className="wordmark" href="#top" aria-label="64 Faces home">64 FACES</a>
           <nav className="top-links" aria-label="Main navigation">
             <a href="#explore">EXPLORE</a>
-            <a href="#about">ABOUT</a>
             <a href="#api">API</a>
+            <a href="#game">GAME</a>
+            <a href="#about">ABOUT</a>
             <a href="https://filter8.xyz" target="_blank" rel="noreferrer">FILTER8 ↗</a>
           </nav>
         </div>
@@ -513,6 +642,17 @@ export default function Home() {
             <p>THE PUBLIC PIXEL API RETURNS EIGHT ROW BYTES PER FACE, ALONG WITH THE EXACT ON-CHAIN COLORS AND TRAITS. BIT 7 IS THE LEFTMOST PIXEL.</p>
           </div>
           <div className="link-row"><a className="outline-btn" target="_blank" rel="noreferrer" href={`/api/face/${selected?.id ?? 1}`}>VIEW JSON API ↗</a></div>
+        </section>
+
+        <section className="section" id="game">
+          <div className="section-top">
+            <h2 className="section-title">[ GAME / FACE64 ]</h2>
+            <span>ONE FACE / ONE BUTTON / REMOVE THE PIXELS</span>
+          </div>
+          <div className="body-text">
+            <p>PRESS START TO SCAN AN 8×8 FACE, THEN STOP TO SLOW DOWN. HIT A LIT PIXEL TO REMOVE IT AND CONTINUE ON THE SAME TOKEN. MISS AND A NEW FACE LOADS.</p>
+          </div>
+          <FaceGame key={selected?.id ?? "no-face"} face={selected} onMiss={chooseRandom} />
         </section>
       </main>
       <footer className="shell footer"><span>64 FACES / 8×8 / #000000 + #CCFF00</span><a href="https://filter8.xyz" target="_blank" rel="noreferrer">AN EXPERIMENT BY FILTER8 ↗</a></footer>
