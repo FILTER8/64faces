@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 64 Faces — 1-bit on-chain explorer
 
-## Getting Started
+Drop these files into the matching locations of the **new standalone Next.js 16 project**.
 
-First, run the development server:
+- `app/page.tsx`: client gallery, seven trait filters, rarity rankings, on-chain preview, PNG exports
+- `app/globals.css`: strict black / #CCFF00, Departure Mono typography
+- `app/layout.tsx`: page metadata
+- `app/api/faces/route.ts`: paginated on-chain gallery API
+- `app/api/face/[id]/route.ts`: ESP32-ready eight-row byte API
+- `lib/faces.ts`: shared server-only Robinhood Chain contract reader
+- `public/fonts/DepartureMono-Regular.woff`: your uploaded font
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+No WalletConnect, Alchemy, Wagmi, or new packages are needed.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Run
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`npm install`
+`npm run dev`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Optionally configure a more reliable private server-only Robinhood RPC in `.env.local`:
 
-## Learn More
+`ROBINHOOD_RPC_URL=https://your-robinhood-chain-rpc.example`
 
-To learn more about Next.js, take a look at the following resources:
+Do **not** use the NEXT_PUBLIC_ prefix for private URLs or API credentials.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Important
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Contract address defaults to `0xc8e36ae47246e5943da2b228fbaff1fb27a473b0` on Robinhood Chain (4663).
+- The site reads the actual `totalSupply()` and on-chain `tokenURI(uint256)` for every minted token, decoding the embedded SVG rectangles into 8 bytes. It supports token IDs starting at either 0 or 1.
+- It may take some time on a public RPC to index all minted faces. Rarity ranks are **not shown until every minted face has loaded**. "Rarest" sorts by descending sum of inverse observed trait frequencies across the seven categories; ties sort by token ID.
+- API reads are cached in the server process for 10 minutes. For a production launch with heavy traffic, add a persistent/shared cache and rate limiting.
+- If Robinhood's RPC does not support this contract or restricts browser/server traffic, configure `ROBINHOOD_RPC_URL` on the deployment server.
+- The actual number of currently minted faces may be lower than the max supply of 512.
+- This is a no-mint, read-only explorer.
