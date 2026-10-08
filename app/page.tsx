@@ -25,8 +25,8 @@ function PixelFace({ face, className = "" }: { face: Face | null; className?: st
   );
 }
 
-// FACE64: keep the same on-chain face after a hit, removing one pixel.
-// On a miss (or when all lit pixels are cleared), advance to another face.
+// FACE64: GREEN is the only safe color. Every successful stop removes one
+// green pixel; a black stop loads a different face after the roulette settles.
 function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
   const [phase, setPhase] = useState<"idle" | "spinning" | "slowing" | "finished" | "changing">("idle");
   const [position, setPosition] = useState(0);
@@ -43,18 +43,31 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
     if (phase !== "spinning") return;
     const interval = window.setInterval(() => {
       setPosition((current) => (current + 1) % 64);
-    }, 70);
+    }, 85);
     return () => window.clearInterval(interval);
   }, [phase]);
 
   useEffect(() => clearTimers, [clearTimers]);
 
-  const initialLit = face ? face.rows.reduce((sum, row) => {
-    let bits = row;
-    while (bits) { sum += bits & 1; bits >>>= 1; }
-    return sum;
-  }, 0) : 0;
-  const remaining = initialLit - removed.length;
+  // Always evaluate what players SEE, including inverted-palette NFTs.
+  // After a HIT, that green cell turns black and cannot score again.
+  const isGreen = (index: number): boolean => {
+    if (!face || removed.includes(index)) return false;
+    const y = Math.floor(index / 8);
+    const x = index % 8;
+    const setBit = (face.rows[y] & (1 << (7 - x))) !== 0;
+    return (setBit ? face.foreground : face.background).toUpperCase() === GREEN;
+  };
+
+  const originalGreen = face
+    ? Array.from({ length: 64 }, (_, index) => {
+        const y = Math.floor(index / 8);
+        const x = index % 8;
+        const setBit = (face.rows[y] & (1 << (7 - x))) !== 0;
+        return (setBit ? face.foreground : face.background).toUpperCase() === GREEN;
+      }).filter(Boolean).length
+    : 0;
+  const remaining = originalGreen - removed.length;
 
   function toggleGame() {
     if (!face || phase === "slowing" || phase === "changing") return;
@@ -67,27 +80,22 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
       return;
     }
 
-    // Roulette-style easing: the result is determined at the FINAL stop,
-    // against the currently remaining pixels, not the original image.
-    setPhase("slowing");
+    // Stop does not instantly freeze: advance 9 more cells with increasing
+    // delays, then evaluate the ACTUAL final cell after the slowdown.
+    const startPosition = position;
     const delays = [75, 90, 110, 140, 180, 235, 310, 410, 550];
-    const finalPosition = (position + delays.length) % 64;
-    const row = Math.floor(finalPosition / 8);
-    const col = finalPosition % 8;
-    const litOnChain = (face.rows[row] & (1 << (7 - col))) !== 0;
-    const hit = litOnChain && !removed.includes(finalPosition);
+    const landingPosition = (startPosition + delays.length) % 64;
+    const hit = isGreen(landingPosition);
+    setPhase("slowing");
     let elapsed = 0;
-
     delays.forEach((delay, index) => {
       elapsed += delay;
       timers.current.push(window.setTimeout(() => {
-        setPosition((position + index + 1) % 64);
+        setPosition((startPosition + index + 1) % 64);
         if (index !== delays.length - 1) return;
-
         setOutcome(hit ? "HIT" : "MISS");
         if (hit) {
-          // Remove ONLY the pixel we landed on. Do not change the token.
-          setRemoved((current) => [...current, finalPosition]);
+          setRemoved((current) => [...current, landingPosition]);
           if (remaining === 1) {
             setPhase("changing");
             timers.current.push(window.setTimeout(onMiss, 1250));
@@ -95,7 +103,6 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
             setPhase("finished");
           }
         } else {
-          // Bust: briefly show the result, then load the next on-chain face.
           setPhase("changing");
           timers.current.push(window.setTimeout(onMiss, 1250));
         }
@@ -112,31 +119,23 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
           <span>{face ? `FACE #${face.id}` : "LOADING FACE"}</span>
         </div>
         <div className="mini-game-board-frame" style={{ border: `4px solid ${GREEN}`, padding: 8, background: BLACK, width: "min(100%, 344px)", margin: "0 auto", boxSizing: "border-box" }}>
-          <div className="mini-game-board" role="img" aria-label={face ? `Face ${face.id}: ${remaining} lit pixels left` : "Loading face"} style={{ background: BLACK, width: "100%", margin: 0, padding: 0, border: 0, gap: 0 }}>
-            {face && face.rows.flatMap((row, y) =>
+          <div className="mini-game-board" role="img" aria-label={face ? `Face ${face.id}: ${remaining} green pixels remaining` : "Loading face"} style={{ background: BLACK, width: "100%", margin: 0, padding: 0, border: 0, gap: 0 }}>
+            {face && face.rows.flatMap((_row, y) =>
               Array.from({ length: 8 }, (_, x) => {
                 const index = y * 8 + x;
-                const lit = (row & (1 << (7 - x))) !== 0 && !removed.includes(index);
-                const active = (scanning || outcome !== null) && position === index;
-                const baseColor = lit ? face.foreground : face.background;
-                // A cursor is the exact color inverse of the pixel underneath.
-                // Keep it visible on EVERY step (no CSS blink / invisible frames).
-                const displayColor = active
-                  ? (baseColor === GREEN ? BLACK : GREEN)
-                  : baseColor;
+                const green = isGreen(index);
+                const active = scanning && position === index;
+                // The cursor stays visible by inverting the underlying cell.
+                const pixelColor = active ? (green ? BLACK : GREEN) : (green ? GREEN : BLACK);
                 return (
-                  <span
-                    key={`${x}-${y}`}
-                    className="mini-game-pixel"
-                    style={{ backgroundColor: displayColor, display: "block" }}
-                  />
+                  <span key={`${x}-${y}`} className="mini-game-pixel" style={{ backgroundColor: pixelColor, display: "block" }} />
                 );
               })
             )}
           </div>
         </div>
         <div className="mini-game-topline" style={{ marginTop: 14, marginBottom: 0 }}>
-          <span>PIXELS LEFT {remaining} / {initialLit}</span>
+          <span>GREEN PIXELS LEFT {remaining} / {originalGreen}</span>
           <span>HITS {removed.length}</span>
         </div>
         <div className="mini-game-controls">
@@ -144,11 +143,11 @@ function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
             {phase === "spinning" ? "■ STOP" : phase === "slowing" ? "STOPPING…" : phase === "changing" ? "NEXT FACE…" : outcome ? "▶ START AGAIN" : "▶ START"}
           </button>
           <span className="mini-game-result" role="status" aria-live="polite">
-            {phase === "spinning" ? "SCANNING…" : phase === "slowing" ? "SLOWING DOWN…" : outcome === "HIT" ? (phase === "changing" ? "CLEARED / NEXT FACE…" : "HIT / PIXEL REMOVED") : outcome === "MISS" ? "MISS / NEW FACE…" : "STOP ON A LIT PIXEL"}
+            {phase === "spinning" ? "SCANNING…" : phase === "slowing" ? "SLOWING DOWN…" : outcome === "HIT" ? (phase === "changing" ? "ALL GREEN CLEARED / NEXT FACE…" : "GREEN HIT / PIXEL REMOVED / GO AGAIN") : outcome === "MISS" ? "BLACK / MISS / NEW FACE…" : "STOP ON GREEN TO CONTINUE"}
           </span>
         </div>
       </div>
-      <p className="mini-game-hint">HIT A LIT PIXEL TO REMOVE IT AND KEEP PLAYING THE SAME FACE. MISS TO LOAD A NEW TOKEN. $OCH GAME TOKEN INTEGRATION IS A FUTURE EXPERIMENT.</p>
+      <p className="mini-game-hint">ONLY GREEN PIXELS COUNT. STOP ON GREEN TO REMOVE ONE PIXEL AND CONTINUE WITH THE SAME FACE. STOP ON BLACK AND A NEW TOKEN LOADS. $OCH GAME TOKEN INTEGRATION IS A FUTURE EXPERIMENT.</p>
     </div>
   );
 }
@@ -650,7 +649,7 @@ export default function Home() {
             <span>ONE FACE / ONE BUTTON / REMOVE THE PIXELS</span>
           </div>
           <div className="body-text">
-            <p>PRESS START TO SCAN AN 8×8 FACE, THEN STOP TO SLOW DOWN. HIT A LIT PIXEL TO REMOVE IT AND CONTINUE ON THE SAME TOKEN. MISS AND A NEW FACE LOADS.</p>
+            <p>PRESS START TO SCAN THE 8×8 BOARD. PRESS STOP TO SLOW DOWN. LAND ON GREEN TO REMOVE THAT PIXEL AND CONTINUE WITH THE SAME FACE. LAND ON BLACK AND A NEW FACE LOADS.</p>
           </div>
           <FaceGame key={selected?.id ?? "no-face"} face={selected} onMiss={chooseRandom} />
         </section>
