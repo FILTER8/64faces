@@ -25,133 +25,6 @@ function PixelFace({ face, className = "" }: { face: Face | null; className?: st
   );
 }
 
-// FACE64: GREEN is the only safe color. Every successful stop removes one
-// green pixel; a black stop loads a different face after the roulette settles.
-function FaceGame({ face, onMiss }: { face: Face | null; onMiss: () => void }) {
-  const [phase, setPhase] = useState<"idle" | "spinning" | "slowing" | "finished" | "changing">("idle");
-  const [position, setPosition] = useState(0);
-  const [outcome, setOutcome] = useState<"HIT" | "MISS" | null>(null);
-  const [removed, setRemoved] = useState<number[]>([]);
-  const timers = useRef<number[]>([]);
-
-  const clearTimers = useCallback(() => {
-    timers.current.forEach((timer) => window.clearTimeout(timer));
-    timers.current = [];
-  }, []);
-
-  useEffect(() => {
-    if (phase !== "spinning") return;
-    const interval = window.setInterval(() => {
-      setPosition((current) => (current + 1) % 64);
-    }, 85);
-    return () => window.clearInterval(interval);
-  }, [phase]);
-
-  useEffect(() => clearTimers, [clearTimers]);
-
-  // Always evaluate what players SEE, including inverted-palette NFTs.
-  // After a HIT, that green cell turns black and cannot score again.
-  const isGreen = (index: number): boolean => {
-    if (!face || removed.includes(index)) return false;
-    const y = Math.floor(index / 8);
-    const x = index % 8;
-    const setBit = (face.rows[y] & (1 << (7 - x))) !== 0;
-    return (setBit ? face.foreground : face.background).toUpperCase() === GREEN;
-  };
-
-  const originalGreen = face
-    ? Array.from({ length: 64 }, (_, index) => {
-        const y = Math.floor(index / 8);
-        const x = index % 8;
-        const setBit = (face.rows[y] & (1 << (7 - x))) !== 0;
-        return (setBit ? face.foreground : face.background).toUpperCase() === GREEN;
-      }).filter(Boolean).length
-    : 0;
-  const remaining = originalGreen - removed.length;
-
-  function toggleGame() {
-    if (!face || phase === "slowing" || phase === "changing") return;
-
-    if (phase !== "spinning") {
-      clearTimers();
-      setOutcome(null);
-      setPosition((current) => (current + 1) % 64);
-      setPhase("spinning");
-      return;
-    }
-
-    // Stop does not instantly freeze: advance 9 more cells with increasing
-    // delays, then evaluate the ACTUAL final cell after the slowdown.
-    const startPosition = position;
-    const delays = [75, 90, 110, 140, 180, 235, 310, 410, 550];
-    const landingPosition = (startPosition + delays.length) % 64;
-    const hit = isGreen(landingPosition);
-    setPhase("slowing");
-    let elapsed = 0;
-    delays.forEach((delay, index) => {
-      elapsed += delay;
-      timers.current.push(window.setTimeout(() => {
-        setPosition((startPosition + index + 1) % 64);
-        if (index !== delays.length - 1) return;
-        setOutcome(hit ? "HIT" : "MISS");
-        if (hit) {
-          setRemoved((current) => [...current, landingPosition]);
-          if (remaining === 1) {
-            setPhase("changing");
-            timers.current.push(window.setTimeout(onMiss, 1250));
-          } else {
-            setPhase("finished");
-          }
-        } else {
-          setPhase("changing");
-          timers.current.push(window.setTimeout(onMiss, 1250));
-        }
-      }, elapsed));
-    });
-  }
-
-  const scanning = phase === "spinning" || phase === "slowing";
-  return (
-    <div className="mini-game">
-      <div className="mini-game-screen">
-        <div className="mini-game-topline">
-          <span>FACE64 / ONE BUTTON</span>
-          <span>{face ? `FACE #${face.id}` : "LOADING FACE"}</span>
-        </div>
-        <div className="mini-game-board-frame" style={{ border: `4px solid ${GREEN}`, padding: 8, background: BLACK, width: "min(100%, 344px)", margin: "0 auto", boxSizing: "border-box" }}>
-          <div className="mini-game-board" role="img" aria-label={face ? `Face ${face.id}: ${remaining} green pixels remaining` : "Loading face"} style={{ background: BLACK, width: "100%", margin: 0, padding: 0, border: 0, gap: 0 }}>
-            {face && face.rows.flatMap((_row, y) =>
-              Array.from({ length: 8 }, (_, x) => {
-                const index = y * 8 + x;
-                const green = isGreen(index);
-                const active = scanning && position === index;
-                // The cursor stays visible by inverting the underlying cell.
-                const pixelColor = active ? (green ? BLACK : GREEN) : (green ? GREEN : BLACK);
-                return (
-                  <span key={`${x}-${y}`} className="mini-game-pixel" style={{ backgroundColor: pixelColor, display: "block" }} />
-                );
-              })
-            )}
-          </div>
-        </div>
-        <div className="mini-game-topline" style={{ marginTop: 14, marginBottom: 0 }}>
-          <span>GREEN PIXELS LEFT {remaining} / {originalGreen}</span>
-          <span>HITS {removed.length}</span>
-        </div>
-        <div className="mini-game-controls">
-          <button type="button" className="outline-btn mini-game-button" onClick={toggleGame} disabled={!face || phase === "slowing" || phase === "changing"}>
-            {phase === "spinning" ? "■ STOP" : phase === "slowing" ? "STOPPING…" : phase === "changing" ? "NEXT FACE…" : outcome ? "▶ START AGAIN" : "▶ START"}
-          </button>
-          <span className="mini-game-result" role="status" aria-live="polite">
-            {phase === "spinning" ? "SCANNING…" : phase === "slowing" ? "SLOWING DOWN…" : outcome === "HIT" ? (phase === "changing" ? "ALL GREEN CLEARED / NEXT FACE…" : "GREEN HIT / PIXEL REMOVED / GO AGAIN") : outcome === "MISS" ? "BLACK / MISS / NEW FACE…" : "STOP ON GREEN TO CONTINUE"}
-          </span>
-        </div>
-      </div>
-      <p className="mini-game-hint">ONLY GREEN PIXELS COUNT. STOP ON GREEN TO REMOVE ONE PIXEL AND CONTINUE WITH THE SAME FACE. STOP ON BLACK AND A NEW TOKEN LOADS. $OCH GAME TOKEN INTEGRATION IS A FUTURE EXPERIMENT.</p>
-    </div>
-  );
-}
-
 type ExportMode = "art" | "card";
 
 async function exportPNG(face: Face, mode: ExportMode, rank?: number) {
@@ -458,18 +331,20 @@ export default function Home() {
     return results;
   }, [faces, filters, search, sort, complete, ranks]);
 
-  const goSelected = useCallback((delta: number) => {
-    if (!faces.length || !selected) return;
-    const at = faces.findIndex((face) => face.id === selected.id);
-    setSelectedId(faces[(at + delta + faces.length) % faces.length].id);
-  }, [faces, selected]);
+const goSelected = useCallback((delta: number) => {
+  if (!faces.length || !selected) return;
+  const at = faces.findIndex((face) => face.id === selected.id);
+  setSelectedId(faces[(at + delta + faces.length) % faces.length].id);
+}, [faces, selected]);
 
-  const chooseRandom = useCallback(() => {
-    if (!faces.length) return;
-    const options = faces.filter((face) => face.id !== selected?.id);
-    const pool = options.length ? options : faces;
-    setSelectedId(pool[Math.floor(Math.random() * pool.length)].id);
-  }, [faces, selected]);
+const chooseRandom = useCallback(() => {
+  if (!faces.length) return;
+
+  const randomIndex = Math.floor(Math.random() * faces.length);
+  setSelectedId(faces[randomIndex].id);
+}, [faces]);
+
+
 
   async function downloadGallery() {
     if (!complete || matching.length === 0 || exportingGallery) return;
@@ -493,9 +368,9 @@ export default function Home() {
         <div className="shell header-content">
           <a className="wordmark" href="#top" aria-label="64 Faces home">64 FACES</a>
           <nav className="top-links" aria-label="Main navigation">
+            <a href="/game">GAME ↗</a>
             <a href="#explore">EXPLORE</a>
             <a href="#api">API</a>
-            <a href="#game">GAME</a>
             <a href="#about">ABOUT</a>
             <a href="https://filter8.xyz" target="_blank" rel="noreferrer">FILTER8 ↗</a>
           </nav>
@@ -508,6 +383,7 @@ export default function Home() {
             <div className="kicker">[ ROBINHOOD CHAIN ]</div>
             <h1>64<br />FACES.</h1>
             <p className="hero-copy">64 PIXELS. 2 COLORS. 512 POSSIBLE FACES.<br /><br />A ONE-PROMPT EXPERIMENT IN GENERATIVE ART, AI AND CREATIVE CONSTRAINTS. EVERY FACE IS AN 8×8 BITMAP RENDERED BY A FULLY ON-CHAIN SMART CONTRACT.</p>
+            <div className="hero-actions"><a className="outline-btn" href="/game">▶ PLAY FACE64 / DAILY ARCADE →</a></div>
             <div className="hero-data">
               <div><span>GRID</span><strong>8 × 8</strong></div>
               <div><span>PALETTE</span><strong>1 BIT</strong></div>
@@ -643,16 +519,7 @@ export default function Home() {
           <div className="link-row"><a className="outline-btn" target="_blank" rel="noreferrer" href={`/api/face/${selected?.id ?? 1}`}>VIEW JSON API ↗</a></div>
         </section>
 
-        <section className="section" id="game">
-          <div className="section-top">
-            <h2 className="section-title">[ GAME / FACE64 ]</h2>
-            <span>ONE FACE / ONE BUTTON / REMOVE THE PIXELS</span>
-          </div>
-          <div className="body-text">
-            <p>PRESS START TO SCAN THE 8×8 BOARD. PRESS STOP TO SLOW DOWN. LAND ON GREEN TO REMOVE THAT PIXEL AND CONTINUE WITH THE SAME FACE. LAND ON BLACK AND A NEW FACE LOADS.</p>
-          </div>
-          <FaceGame key={selected?.id ?? "no-face"} face={selected} onMiss={chooseRandom} />
-        </section>
+
       </main>
       <footer className="shell footer"><span>64 FACES / 8×8 / #000000 + #CCFF00</span><a href="https://filter8.xyz" target="_blank" rel="noreferrer">AN EXPERIMENT BY FILTER8 ↗</a></footer>
     </>
