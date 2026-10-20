@@ -178,3 +178,9 @@
 .f64-day-toggle button{background:transparent;border:1px solid #4b6827;color:#ccff00;padding:9px 15px}
 .f64-day-toggle button.selected{background:#ccff00;color:#000}
 @media(max-width:450px){.f64-flow-page .f64-controls3{gap:5px}.f64-flow-page .f64-controls3 button{font-size:11px;min-height:66px;padding:6px 2px}.f64-flow-page .f64-stats-v21 strong{font-size:21px}}
+
+/* Read-only replay controls for finished FACE64 sessions. */
+.f64-replay-controls{max-width:520px;margin:15px auto;text-align:center}
+.f64-replay-controls>p{color:#a9c77f;font-size:11px;margin:12px auto}
+.f64-replay-progress{font-size:10px;color:#ccff00;letter-spacing:1px;margin:10px auto}
+.f64-replay-controls .f64-wideButton{min-height:48px;font-size:12px}

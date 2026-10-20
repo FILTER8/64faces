@@ -47,6 +47,46 @@ type LiveSession = { sessionId:string; collection:Identity; tokenId:number; stat
 type Entry = {sessionId:string; collection:Identity;tokenId:number;score:number;status:string};
 type TournamentInfo = {day:string;entrants:number;results:number;pool:string;fee:string;finalized:boolean;refundAll:boolean;winnerCount:number;winningScore:string;winningCollection:string;winningTokenId:string;endTime:string};
 type Artwork = { rows:number[]; foreground?:string; background?:string };
+type ReplayEvent = {type:string;payload:Record<string,unknown>;at:number};
+type ReplayPayload = {sessionId:string;day:string;faceIds:number[];events:ReplayEvent[];truncated:boolean};
+type ReplayFrame = {rows:number[];faceId:number;round:number;totalPoints:number;roundPoints:number;position:number|null;label:string};
+function replayFrames(data:ReplayPayload,boards:number[][]):ReplayFrame[]{
+  let round=0,totalPoints=0,roundPoints=0;
+  let rows=[...(boards[0]||Array<number>(8).fill(0))];
+  const frames:ReplayFrame[]=[];
+  const add=(label:string,position:number|null=null,repeats=1)=>{
+    for(let n=0;n<repeats;n++)frames.push({rows:[...rows],faceId:data.faceIds[Math.min(round,7)]||0,round:Math.min(round,7),totalPoints,roundPoints,position,label});
+  };
+  add('ROUND 1 · READY',null,8);
+  for(const ev of data.events){
+    if(ev.type==='run'){
+      const start=Number(ev.payload.startPosition),steps=Number(ev.payload.steps),landing=Number(ev.payload.landing);
+      if(!Number.isInteger(start)||start<0||start>63||!Number.isInteger(steps)||steps<1||steps>64||!Number.isInteger(landing)||landing<0||landing>63)continue;
+      add('RUN · SPINNING',pathIndex(start),4);
+      for(let i=1;i<=steps;i++)add('RUN · SPINNING',pathIndex(start+i),i===steps?6:2);
+      if(ev.payload.hit===true){
+        const earned=Number(ev.payload.earned)||0;
+        rows[Math.floor(landing/8)] &= ~(128>>(landing%8));roundPoints+=earned;
+        add('HIT +' + earned,landing,10);
+        if(rows.every(v=>v===0)){
+          totalPoints+=roundPoints;add('AUTO BANK +' + roundPoints,landing,8);
+          round++;roundPoints=0;
+          if(round<8){rows=[...(boards[round]||Array<number>(8).fill(0))];add('ROUND '+(round+1)+' · READY',null,8);}
+        }
+      }else{
+        add('MISS · ROUND OVER',landing,10);round++;roundPoints=0;
+        if(round<8){rows=[...(boards[round]||Array<number>(8).fill(0))];add('ROUND '+(round+1)+' · READY',null,8);}
+      }
+    }else if(ev.type==='bank'){
+      totalPoints+=roundPoints;
+      add('BANKED '+roundPoints+' POINTS',null,10);
+      round++;roundPoints=0;
+      if(round<8){rows=[...(boards[round]||Array<number>(8).fill(0))];add('ROUND '+(round+1)+' · READY',null,8);}
+    }
+  }
+  add('REPLAY COMPLETE · '+totalPoints+' POINTS',null,18);
+  return frames;
+}
 function timeLeft(ms:number):string { const seconds=Math.max(0,Math.floor(ms/1000));return `${String(Math.floor(seconds/60)).padStart(2,"0")}:${String(seconds%60).padStart(2,"0")}`; }
 function dayClock(ms:number):string { const s=Math.max(0,Math.floor(ms/1000));return `${String(Math.floor(s/3600)).padStart(2,"0")}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
 const pathIndex = (step: number) => { const pos = ((step % N) + N) % N; const y = Math.floor(pos / 8); return y * 8 + (y % 2 === 0 ? pos % 8 : 7 - pos % 8); };
@@ -119,6 +159,12 @@ export default function GamePage(){
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [spectating,setSpectating]=useState(false);
+  const [replay,setReplay]=useState<ReplayFrame[]>([]);
+  const [replayIndex,setReplayIndex]=useState(0);
+  const [replayPlaying,setReplayPlaying]=useState(false);
+  const [replayLoading,setReplayLoading]=useState(false);
+  const [replayError,setReplayError]=useState('');
+  const replayIdRef=useRef('');
   const [live,setLive]=useState<LiveSession[]>([]);
   const [leaders,setLeaders]=useState<Entry[]>([]);
   const [scrollOffset,setScrollOffset]=useState(8);
@@ -134,8 +180,9 @@ export default function GamePage(){
   const sessionRef=useRef<Session|null>(null);
   const spectatorRef=useRef(false);
   const todayDay=now ? new Date(now).toISOString().slice(0,10) : "";
-  const current= session?.state ?? defaultState;
-  const displayRows=session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? []);
+  const frame=spectating&&replay.length?replay[Math.min(replayIndex,replay.length-1)]:null;
+  const current= frame?{...defaultState,round:frame.round,faceId:frame.faceId,rows:frame.rows,totalPoints:frame.totalPoints,roundPoints:frame.roundPoints}:session?.state ?? defaultState;
+  const displayRows=frame?frame.rows:session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? []);
   const initialPreview=!session&&!!preview;
   const previewFg=initialPreview?(preview?.foreground??GREEN):GREEN;
   const previewBg=initialPreview?(preview?.background??BLACK):BLACK;
@@ -235,10 +282,10 @@ export default function GamePage(){
   },[previewFaceId]);
 
   useEffect(()=>{
-    if(!spectating || !session?.sessionId) return;
+    if(!spectating || replay.length>0 || !session?.sessionId || session.status!=="playing") return;
     const id=window.setInterval(()=>void syncPublic(session.sessionId).catch(()=>{}),2000);
     return ()=>window.clearInterval(id);
-  },[spectating,session?.sessionId,syncPublic]);
+  },[spectating,replay.length,session?.sessionId,session?.status,syncPublic]);
 
   useEffect(()=>{
     const update=async()=>{
@@ -510,18 +557,44 @@ export default function GamePage(){
       setClaimInfo({day:fresh.day,collection,tokenId,joined:e.joined,resultSubmitted:e.resultSubmitted,prizeClaimed:e.prizeClaimed,refundClaimed:e.refundClaimed,score:e.score});
     }finally{setBusy(false);}
   };
+  const loadReplay=useCallback(async(id:string)=>{
+    replayIdRef.current=id;
+    setReplay([]);setReplayIndex(0);setReplayPlaying(false);setReplayLoading(true);setReplayError('');
+    try{
+      const data=await readJSON<ReplayPayload>(`${API}/sessions/${id}/replay`);
+      if(data.truncated)throw new Error('Replay history exceeds the safe event limit.');
+      if(!data.faceIds?.length)throw new Error('No historical boards found for this session.');
+      const artworks=await Promise.all(data.faceIds.map(faceId=>readJSON<Artwork>(`/api/face/${faceId}`)));
+      if(artworks.some(a=>a.rows?.length!==8))throw new Error('A replay board could not be loaded.');
+      const frames=replayFrames(data,artworks.map(a=>a.rows));
+      if(replayIdRef.current===id){setReplay(frames);setReplayIndex(0);setReplayPlaying(true);}
+    }catch(e){if(replayIdRef.current===id)setReplayError(e instanceof Error?e.message:String(e));}
+    finally{if(replayIdRef.current===id)setReplayLoading(false);}
+  },[]);
+  useEffect(()=>{
+    if(!spectating||!session||session.status==='playing'||replay.length||replayLoading||replayError||!replayIdRef.current)return;
+    void loadReplay(replayIdRef.current);
+  },[spectating,session,session?.status,replay.length,replayLoading,replayError,loadReplay]);
+  useEffect(()=>{
+    if(!replayPlaying || replay.length===0 || screen!=="watch" || !spectating)return;
+    const timer=window.setInterval(()=>setReplayIndex(i=>{
+      if(i>=replay.length-1){setReplayPlaying(false);return i;}
+      return i+1;
+    }),135);
+    return ()=>window.clearInterval(timer);
+  },[replayPlaying,replay.length,screen,spectating]);
   const watch=(id:string)=>{
+    replayIdRef.current=id;setReplay([]);setReplayPlaying(false);setReplayError("");
     spectatorRef.current=true;setSpectating(true);setScreen("watch");setMode("ranked");setPosition(null);setMessage("WATCHING LIVE GAME");
     window.history.replaceState({},"",`/game?watch=${encodeURIComponent(id)}`);
     void syncPublic(id,"ranked").catch(e=>setError(String(e)));
   };
   const backToPlayer=()=>{
-    spectatorRef.current=false;setSpectating(false);setSession(null);sessionRef.current=null;setPosition(null);setScreen("welcome");
-    window.history.replaceState({},"","/game");
-    const id=window.sessionStorage.getItem("face64-ranked-id");
-    if(id){setMode("ranked");tokenRef.current=window.sessionStorage.getItem("face64-ranked-token")||"";setScreen("game");void syncPublic(id,"ranked").catch(()=>{});}
+    replayIdRef.current='';setReplayPlaying(false);setReplay([]);setReplayIndex(0);setReplayError('');
+    spectatorRef.current=false;setSpectating(false);setSession(null);sessionRef.current=null;setPosition(null);
+    setScreen('leaderboard');window.history.replaceState({},'', '/game');
   };
-  const visiblePosition=position===null?pathIndex(start):position;
+  const visiblePosition=frame?frame.position:position===null?pathIndex(start):position;
   // Preserve Space/Enter as actual buttons; never hijack typing in the identity fields.
   const moveRef=useRef<() => void>(()=>{});
   const actionRef=useRef<() => Promise<void>>(async()=>{});
@@ -548,14 +621,14 @@ export default function GamePage(){
   const dailyRemaining=daily&&now?Math.max(0,Date.parse(daily.tournamentEnd)-now):null;
   const displayName=(kind:Identity,id:number)=>`${kind==="face"?"FACE":"HOODIE"} #${id}`;
   const gameBoard=<>
-    <div className={styles.hud}><span>{spectating?"WATCH LIVE":`ROUND ${session?Math.min(current.round+1,8):1} / 8`}</span><span>FACE #{current.faceId||daily?.faceIds?.[0]||"—"}</span></div>
+    <div className={styles.hud}><span>{spectating?(frame?`REPLAY · ROUND ${frame.round+1}/8`:"WATCH LIVE"):`ROUND ${session?Math.min(current.round+1,8):1} / 8`}</span><span>FACE #{current.faceId||daily?.faceIds?.[0]||"—"}</span></div>
     <div className="f64-playing">{session?displayName(session.identity.collection,session.identity.tokenId):displayName(collection,tokenId)} · {mode==="free"?"FREE":"TOURNAMENT"}</div>
-    <div className={styles.timer}><span>SESSION <strong>{remaining!==null?timeLeft(remaining):"04:00"}</strong></span><span>DAILY <strong>{dailyRemaining!==null?dayClock(dailyRemaining):"--:--"}</strong></span></div>
+    <div className={styles.timer}><span>SESSION <strong>{spectating&&frame?"REPLAY":remaining!==null?timeLeft(remaining):"04:00"}</strong></span><span>DAILY <strong>{dailyRemaining!==null?dayClock(dailyRemaining):"--:--"}</strong></span></div>
     <div className={`${styles.frame} f64-game-display`}>
       <div className={styles.board} role="img" aria-label={`FACE64 LED; ${count} lit pixels`}>
         {Array.from({length:N},(_,index)=>{
           const active=lit(screenRows,index);
-          const cursor=!showPixelMessage&&!!session&&visiblePosition===index&&current.phase!=="finished";
+          const cursor=!showPixelMessage&&!!session&&visiblePosition===index&&(frame!==null||current.phase!=="finished");
           const potential=!showPixelMessage&&showOdds&&possibleLandings.includes(index);
           return <div className={`${styles.cell}${potential?(active?" f64-possible-hit":" f64-possible-miss"):""}${cursor?" f64-cursor":""}`} key={index} style={{backgroundColor:showPixelMessage?(active?GREEN:BLACK):(active?previewFg:previewBg),position:"relative",zIndex:cursor?2:potential?1:0}}/>;
         })}
@@ -563,7 +636,7 @@ export default function GamePage(){
     </div>
     <div className="f64-odds"><span>7–13 STEPS</span><strong className="f64-odds-percent">{showOdds?`${probability}%`:"—"}</strong><span>{showOdds?`${hitCount}/7 CHANCES HIT GREEN`:"CHOOSE YOUR START PIXEL"}</span></div>
     <div className="f64-legend"><span><i className="f64-legend-start"/> START</span><span><i className="f64-legend-hit"/> POSSIBLE HIT</span><span><i className="f64-legend-miss"/> POSSIBLE MISS</span></div>
-    <div className={styles.readout} aria-live="polite">{busy&&!animation?"LOADING…":message}</div>
+    <div className={styles.readout} aria-live="polite">{frame?frame.label:busy&&!animation?"LOADING…":message}</div>
     <div className={`${styles.stats} f64-stats-v21`}><span>BANKED <strong>{current.totalPoints}</strong></span><span className="f64-risk">AT RISK <strong>{current.roundPoints}</strong></span><span>PRIZE POOL <strong>{mode==="ranked"&&tournamentInfo?`${(Number(BigInt(tournamentInfo.pool))/1e18).toLocaleString(undefined,{maximumFractionDigits:2})}`:"—"}</strong><em>OCH</em></span></div>
   </>;
   return <div className={`${styles.page} f64-flow-page`}>
@@ -615,7 +688,14 @@ export default function GamePage(){
             <button type="button" className="f64-bank-button" disabled={!decision||busy||animation} onClick={()=>void bank()}>BANK</button>
             <button type="button" className="f64-run-button" disabled={!gameReady||busy||animation} onClick={()=>void action()}>RUN</button>
           </div><p className="f64-flow-note">SPACE: NEXT PIXEL · ENTER: RUN · B: BANK · {decision?"BANK ANYTIME AFTER A HIT":"CHOOSE YOUR START POSITION"}</p></>:
-          <button className="f64-wideButton" onClick={backToPlayer}>← LEAVE SPECTATOR</button>}
+          <div className="f64-replay-controls">
+            {replayLoading&&<p>LOADING RECORDED GAME…</p>}
+            {replayError&&<p role="alert">REPLAY UNAVAILABLE: {replayError}</p>}
+            {replay.length>0&&<><div className="f64-replay-progress">PLAYBACK {Math.round((replayIndex+1)/replay.length*100)}% · {Math.min(replayIndex+1,replay.length)} / {replay.length} FRAMES</div>
+              <div className="f64-flow-actions"><button onClick={()=>{if(replayIndex>=replay.length-1)setReplayIndex(0);setReplayPlaying(p=>!p||replayIndex>=replay.length-1);}}>{replayPlaying?'PAUSE':'PLAY REPLAY'}</button><button className="f64-alt" onClick={()=>{setReplayIndex(0);setReplayPlaying(true);}}>RESTART</button></div></>}
+            {!replayLoading&&!replay.length&&!replayError&&<p>{session?.status==='playing'?'LIVE VIEW · UPDATES EVERY 2 SECONDS':'LOADING REPLAY…'}</p>}
+            <button className="f64-wideButton" onClick={backToPlayer}>← BACK TO LEADERBOARD</button>
+          </div>}
           {session&&<p className="f64-flow-note">{session.status==="playing"?"4-MINUTE INACTIVITY LIMIT":"SESSION ENDED"} · {mode==="ranked"?"PAID RANKED":"FREE PRACTICE"}</p>}
         </div>}
         {screen==="result"&&<div className="f64-screen f64-center"><div className="f64-overline">GAME COMPLETE</div><h2>GAME OVER</h2><div className="f64-result-score">{current.totalPoints}<span>POINTS</span></div><p className="f64-sub">{displayName(collection,tokenId)} · {current.round>=8?"8 ROUNDS COMPLETED":"SESSION ENDED EARLY"}</p>
