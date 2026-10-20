@@ -41,10 +41,10 @@ const N = 64;
 type Identity = "face" | "hoodie";
 type Outcome = { start: number; steps: number; landing: number; hit: boolean; earned: number };
 type State = { round: number; phase: "ready" | "decision" | "finished"; rows: number[]; faceId: number; hits: number; roundPoints: number; totalPoints: number; lastOutcome: Outcome | null };
-type Session = { ranked?:boolean; paid?:boolean; sessionId: string; day: string; identity: {collection: Identity;tokenId:number}; status: "playing"|"finished"|"timed_out"|"closed"; state: State; inactivityDeadline: number; dayEnd: number; version: number; sessionToken?: string; prototype: boolean };
+type Session = { ranked?:boolean; paid?:boolean; sessionId: string; day: string; identity: {collection: Identity;tokenId:number}; status: "playing"|"finished"|"timed_out"|"closed"; state: State; inactivityDeadline: number; dayEnd: number; version: number; sessionToken?: string; prototype: boolean; runner?:string|null; strategy?:string|null; verification?:string };
 type Daily = {day:string; faceIds:number[]; rounds:number; entryCutoff:string; tournamentEnd:string};
-type LiveSession = { sessionId:string; collection:Identity; tokenId:number; status:string; state:State; lastActionAt:number };
-type Entry = {sessionId:string; collection:Identity;tokenId:number;score:number;status:string};
+type LiveSession = { sessionId:string; collection:Identity; tokenId:number; status:string; state:State; lastActionAt:number; runner?:string|null; strategy?:string|null };
+type Entry = {sessionId:string; collection:Identity;tokenId:number;score:number;status:string;runner?:string|null;strategy?:string|null};
 type TournamentInfo = {day:string;entrants:number;results:number;pool:string;fee:string;finalized:boolean;refundAll:boolean;winnerCount:number;winningScore:string;winningCollection:string;winningTokenId:string;endTime:string};
 type Artwork = { rows:number[]; foreground?:string; background?:string };
 type ReplayEvent = {type:string;payload:Record<string,unknown>;at:number};
@@ -166,7 +166,10 @@ export default function GamePage(){
   const [replayError,setReplayError]=useState('');
   const replayIdRef=useRef('');
   const [live,setLive]=useState<LiveSession[]>([]);
+  const [demoLive,setDemoLive]=useState<LiveSession[]>([]);
   const [leaders,setLeaders]=useState<Entry[]>([]);
+  const [leaderMode,setLeaderMode]=useState<Mode>("ranked");
+  const [watchMode,setWatchMode]=useState<Mode>("ranked");
   const [scrollOffset,setScrollOffset]=useState(8);
   const [wallet,setWallet]=useState<`0x${string}`|null>(null);
   const [entered,setEntered]=useState(false);
@@ -197,7 +200,7 @@ export default function GamePage(){
   const showOdds=!!session && gameReady && !spectating && !animation && current.phase!=="finished";
   // Do not present completed or abandoned sessions as live just because the
   // backend has not yet updated their persisted status.
-  const activeLive=live.filter(item=>
+  const activeLive=[...live,...demoLive].filter(item=>
     item.status==="playing" &&
     typeof item.lastActionAt==="number" &&
     now>0 &&
@@ -239,6 +242,7 @@ export default function GamePage(){
     }).catch(()=>{});
     const params=new URLSearchParams(window.location.search);
     const watchId=params.get("watch");
+    const watchKind:Mode=params.get("mode")==="free"?"free":"ranked";
     const restoredMode=window.sessionStorage.getItem("face64-flow-mode")==="free"?"free":"ranked";
     const storedId=window.sessionStorage.getItem(restoredMode==="free"?"face64-demo-id":"face64-ranked-id");
     const storedToken=window.sessionStorage.getItem(restoredMode==="free"?"face64-demo-token":"face64-ranked-token");
@@ -249,8 +253,8 @@ export default function GamePage(){
       spectatorRef.current=true;
       void Promise.resolve().then(()=>{
         if(!mounted.current)return;
-        setSpectating(true);setScreen("watch");
-        return syncPublic(watchId,"ranked").catch(err=>setError(String(err)));
+        setSpectating(true);setScreen("watch");setWatchMode(watchKind);setMode(watchKind);
+        return syncPublic(watchId,watchKind).catch(err=>setError(String(err)));
       });
     }else if(storedId && storedToken){
       tokenRef.current=storedToken;
@@ -283,21 +287,21 @@ export default function GamePage(){
 
   useEffect(()=>{
     if(!spectating || replay.length>0 || !session?.sessionId || session.status!=="playing") return;
-    const id=window.setInterval(()=>void syncPublic(session.sessionId).catch(()=>{}),2000);
+    const id=window.setInterval(()=>void syncPublic(session.sessionId,watchMode).catch(()=>{}),2000);
     return ()=>window.clearInterval(id);
-  },[spectating,replay.length,session?.sessionId,session?.status,syncPublic]);
+  },[spectating,replay.length,session?.sessionId,session?.status,syncPublic,watchMode]);
 
   useEffect(()=>{
     const update=async()=>{
       if(!leaderDay)return;
       try{
-        const [a,b]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${API}/leaderboard?day=${leaderDay}`)]);
-        if(mounted.current){setLive(a.sessions);setLeaders(b.entries);}
+        const [a,b,c]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${leaderMode==="free"?"https://api.onchainhoodies.xyz/v1/face64/demo":API}/leaderboard?day=${leaderDay}`),readJSON<{sessions:LiveSession[]}>(`https://api.onchainhoodies.xyz/v1/face64/demo/live`)]);
+        if(mounted.current){setLive(a.sessions);setLeaders(b.entries);setDemoLive(c.sessions);}
       }catch{/* Keep game playable if spectator feed is unavailable. */}
     };
     void update();const id=window.setInterval(()=>void update(),12000);
     return ()=>window.clearInterval(id);
-  },[leaderDay]);
+  },[leaderDay,leaderMode]);
 
   const refreshEntry=useCallback(async(walletAddress:`0x${string}`,c:Identity,id:number)=>{
     if(!Number.isInteger(id)||id<(c==="face"?1:0))return;
@@ -561,7 +565,7 @@ export default function GamePage(){
     replayIdRef.current=id;
     setReplay([]);setReplayIndex(0);setReplayPlaying(false);setReplayLoading(true);setReplayError('');
     try{
-      const data=await readJSON<ReplayPayload>(`${API}/sessions/${id}/replay`);
+      const data=await readJSON<ReplayPayload>(`${watchMode==="free"?"https://api.onchainhoodies.xyz/v1/face64/demo":API}/sessions/${id}/replay`);
       if(data.truncated)throw new Error('Replay history exceeds the safe event limit.');
       if(!data.faceIds?.length)throw new Error('No historical boards found for this session.');
       const artworks=await Promise.all(data.faceIds.map(faceId=>readJSON<Artwork>(`/api/face/${faceId}`)));
@@ -570,7 +574,7 @@ export default function GamePage(){
       if(replayIdRef.current===id){setReplay(frames);setReplayIndex(0);setReplayPlaying(true);}
     }catch(e){if(replayIdRef.current===id)setReplayError(e instanceof Error?e.message:String(e));}
     finally{if(replayIdRef.current===id)setReplayLoading(false);}
-  },[]);
+  },[watchMode]);
   useEffect(()=>{
     if(!spectating||!session||session.status==='playing'||replay.length||replayLoading||replayError||!replayIdRef.current)return;
     void loadReplay(replayIdRef.current);
@@ -583,11 +587,12 @@ export default function GamePage(){
     }),135);
     return ()=>window.clearInterval(timer);
   },[replayPlaying,replay.length,screen,spectating]);
-  const watch=(id:string)=>{
+  const watch=(id:string,kind:Mode="ranked")=>{
+    setWatchMode(kind);
     replayIdRef.current=id;setReplay([]);setReplayPlaying(false);setReplayError("");
-    spectatorRef.current=true;setSpectating(true);setScreen("watch");setMode("ranked");setPosition(null);setMessage("WATCHING LIVE GAME");
-    window.history.replaceState({},"",`/game?watch=${encodeURIComponent(id)}`);
-    void syncPublic(id,"ranked").catch(e=>setError(String(e)));
+    spectatorRef.current=true;setSpectating(true);setScreen("watch");setMode(kind);setPosition(null);setMessage("WATCHING LIVE GAME");
+    window.history.replaceState({},"",`/game?watch=${encodeURIComponent(id)}&mode=${kind}`);
+    void syncPublic(id,kind).catch(e=>setError(String(e)));
   };
   const backToPlayer=()=>{
     replayIdRef.current='';setReplayPlaying(false);setReplay([]);setReplayIndex(0);setReplayError('');
@@ -622,7 +627,7 @@ export default function GamePage(){
   const displayName=(kind:Identity,id:number)=>`${kind==="face"?"FACE":"HOODIE"} #${id}`;
   const gameBoard=<>
     <div className={styles.hud}><span>{spectating?(frame?`REPLAY · ROUND ${frame.round+1}/8`:"WATCH LIVE"):`ROUND ${session?Math.min(current.round+1,8):1} / 8`}</span><span>FACE #{current.faceId||daily?.faceIds?.[0]||"—"}</span></div>
-    <div className="f64-playing">{session?displayName(session.identity.collection,session.identity.tokenId):displayName(collection,tokenId)} · {mode==="free"?"FREE":"TOURNAMENT"}</div>
+    <div className="f64-playing">{session?.runner==="bankr"&&<span className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED · </span>}{session?displayName(session.identity.collection,session.identity.tokenId):displayName(collection,tokenId)} · {mode==="free"?"FREE":"TOURNAMENT"}</div>
     <div className={styles.timer}><span>SESSION <strong>{spectating&&frame?"REPLAY":remaining!==null?timeLeft(remaining):"04:00"}</strong></span><span>DAILY <strong>{dailyRemaining!==null?dayClock(dailyRemaining):"--:--"}</strong></span></div>
     <div className={`${styles.frame} f64-game-display`}>
       <div className={styles.board} role="img" aria-label={`FACE64 LED; ${count} lit pixels`}>
@@ -703,18 +708,18 @@ export default function GamePage(){
           <p className="f64-flow-note">{mode==="free"?"PRACTICE SCORE · NOT ON CHAIN":"SCORE RECORDED ON-CHAIN ✓"}</p>}
           <div className="f64-flow-actions"><button className="f64-alt" onClick={()=>setScreen("leaderboard")}>VIEW LEADERBOARD →</button></div>
         </div>}
-        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · RANKED RESULTS</p>
-          {leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
+        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderMode==="ranked"?"selected":""} onClick={()=>setLeaderMode("ranked")}>TOURNAMENT</button><button className={leaderMode==="free"?"selected":""} onClick={()=>setLeaderMode("free")}>FREE / AGENTS</button></div><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · {leaderMode==="ranked"?"RANKED RESULTS":"FREE PRACTICE · NO OCH PRIZES"}</p>
+          {leaderMode==="ranked"&&leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
           {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
           {leaderInfo.finalized&&leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
           {leaderInfo.finalized&&!leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.resultSubmitted&&!claimInfo.prizeClaimed&&claimInfo.score===BigInt(leaderInfo.winningScore)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimPrize").catch(e=>setError(String(e)))}>CLAIM WINNER PRIZE TO NFT WALLET</button>}
           {leaderInfo.finalized&&!leaderInfo.refundAll&&<p>WINNING SCORE {leaderInfo.winningScore} · {leaderInfo.winnerCount} WINNER(S)</p>}</div>}
-          <div className="f64-leader-list">{leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}</span><strong>{entry.score} PTS</strong></button>):<p>NO COMPLETED RANKED GAMES YET.</p>}</div>
-          <p className="f64-flow-note">LEADERBOARD SHOWS FINISHED WORKER SESSIONS, INCLUDING EXPIRED GAMES. ONLY SUBMITTED ON-CHAIN SCORES DETERMINE PRIZES. CLAIMS USE THE NFT CURRENTLY SELECTED IN PLAYER SETUP.</p>
+          <div className="f64-leader-list">{leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId,leaderMode)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}{entry.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>}</span><strong>{entry.score} PTS</strong></button>):<p>NO COMPLETED RANKED GAMES YET.</p>}</div>
+          <p className="f64-flow-note">LEADERBOARD SHOWS FINISHED SESSIONS, INCLUDING EXPIRED GAMES. ONLY SUBMITTED ON-CHAIN SCORES DETERMINE PRIZES. FREE/AGENT SESSIONS ARE NON-PRIZE PRACTICE. CLAIMS USE THE NFT CURRENTLY SELECTED IN PLAYER SETUP.</p>
           <div className="f64-flow-actions"><button onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
         </div>}
-        {screen==="watch"&&!spectating&&<div className="f64-screen"><h2>WATCH LIVE</h2><p className="f64-sub">ACTIVE DAILY TOURNAMENT GAMES</p>
-          <div className="f64-leader-list">{activeLive.length?activeLive.map(item=><button key={item.sessionId} onClick={()=>watch(item.sessionId)}><span>●</span><span>{displayName(item.collection,item.tokenId)} · ROUND {Math.min(item.state.round+1,8)}/8</span><strong>{item.state.totalPoints} PTS</strong></button>):<p>NO LIVE GAMES RIGHT NOW.</p>}</div>
+        {screen==="watch"&&!spectating&&<div className="f64-screen"><h2>WATCH LIVE</h2><p className="f64-sub">ACTIVE FACE64 GAMES · TOURNAMENT AND FREE</p>
+          <div className="f64-leader-list">{activeLive.length?activeLive.map(item=><button key={item.sessionId} onClick={()=>watch(item.sessionId, demoLive.some(d=>d.sessionId===item.sessionId)?"free":"ranked")}><span>●</span><span>{displayName(item.collection,item.tokenId)}{item.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>} · ROUND {Math.min(item.state.round+1,8)}/8</span><strong>{item.state.totalPoints} PTS</strong></button>):<p>NO LIVE GAMES RIGHT NOW.</p>}</div>
           <div className="f64-flow-actions"><button onClick={()=>setScreen("leaderboard")}>LEADERBOARD</button><button className="f64-alt" onClick={resetFlow}>BACK TO START</button></div>
         </div>}
         {error&&<div className={styles.error} role="alert">{error}</div>}

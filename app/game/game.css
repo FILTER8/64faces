@@ -184,3 +184,8 @@
 .f64-replay-controls>p{color:#a9c77f;font-size:11px;margin:12px auto}
 .f64-replay-progress{font-size:10px;color:#ccff00;letter-spacing:1px;margin:10px auto}
 .f64-replay-controls .f64-wideButton{min-height:48px;font-size:12px}
+
+/* Informational, self-declared agent identity; never implies verified AI. */
+.f64-agent-tag{display:inline-block;color:#ccff00;font-size:9px;letter-spacing:.02em;margin-left:6px;line-height:1.6}
+.f64-leader-list small.f64-agent-tag{display:block;margin-left:0;color:#a9cf5c}
+.f64-day-toggle{flex-wrap:wrap}
