@@ -158,3 +158,23 @@
   .f64-game-screen .f64-odds{margin-top:10px}.f64-screen .f64-sub{font-size:10px}
   .f64-manual{gap:6px}.f64-manual label{font-size:9px}.f64-manual button{padding:7px}
 }
+
+/* FACE64 V2.1: payment, buttons and permissionless settlement */
+.f64-flow-page .f64-controls3{grid-template-columns:1.35fr 1fr 1fr;gap:8px}
+.f64-flow-page .f64-controls3 button{font-size:clamp(12px,2.7vw,16px);font-weight:800;letter-spacing:.01em;min-height:70px;line-height:1.1}
+.f64-flow-page .f64-controls3 .f64-bank-button{background:#d8e8b4;color:#091004}
+.f64-flow-page .f64-controls3 .f64-run-button{background:#ccff00;color:#091004}
+.f64-flow-page .f64-controls3 button:disabled{opacity:.3}
+.f64-flow-page .f64-stats-v21 span{font-size:10px}
+.f64-flow-page .f64-stats-v21 .f64-risk{color:#e9ae61}
+.f64-flow-page .f64-stats-v21 .f64-risk strong{color:#ffb454}
+.f64-flow-page .f64-stats-v21 em{display:block;font-size:9px;font-style:normal}
+.f64-empty-market{text-align:center;border:1px solid #506923;padding:16px;margin:16px 0;color:#adc884;font-size:11px}
+.f64-empty-market a,.f64-swap-link{display:inline-block;color:#ccff00;border:1px solid #73951c;padding:11px 15px;margin:6px 0;text-decoration:none;font-weight:700}
+.f64-settlement{text-align:center;border:1px solid #66872b;padding:15px 12px;margin:15px 0;color:#afc98a;font-size:10px}
+.f64-settlement p{margin:8px 0}
+.f64-settlement .f64-wideButton{font-weight:800}
+.f64-day-toggle{display:flex;gap:10px;justify-content:center;margin:15px}
+.f64-day-toggle button{background:transparent;border:1px solid #4b6827;color:#ccff00;padding:9px 15px}
+.f64-day-toggle button.selected{background:#ccff00;color:#000}
+@media(max-width:450px){.f64-flow-page .f64-controls3{gap:5px}.f64-flow-page .f64-controls3 button{font-size:11px;min-height:66px;padding:6px 2px}.f64-flow-page .f64-stats-v21 strong{font-size:21px}}

@@ -20,6 +20,10 @@ const ABI = parseAbi([
  "function entriesPaused() view returns (bool)",
  "function getEntry(uint256 day,address collection,uint256 tokenId) view returns ((address payer,bool joined,bool resultSubmitted,bool refundClaimed,bool prizeClaimed,uint256 score,bytes32 gameId))",
  "function enter(address collection,uint256 tokenId)",
+ "function finalize(uint256 day)",
+ "function claimPrize(uint256 day,address collection,uint256 tokenId)",
+ "function claimRefund(uint256 day,address collection,uint256 tokenId)",
+ "function balanceOf(address owner) view returns (uint256)",
  "function submitResult(uint256 day,address collection,uint256 tokenId,uint256 score,bytes32 gameId,uint256 deadline,bytes signature)",
  "function ownerOf(uint256 tokenId) view returns (address)",
  "function allowance(address owner,address spender) view returns (uint256)",
@@ -41,6 +45,7 @@ type Session = { ranked?:boolean; paid?:boolean; sessionId: string; day: string;
 type Daily = {day:string; faceIds:number[]; rounds:number; entryCutoff:string; tournamentEnd:string};
 type LiveSession = { sessionId:string; collection:Identity; tokenId:number; status:string; state:State; lastActionAt:number };
 type Entry = {sessionId:string; collection:Identity;tokenId:number;score:number;status:string};
+type TournamentInfo = {day:string;entrants:number;results:number;pool:string;fee:string;finalized:boolean;refundAll:boolean;winnerCount:number;winningScore:string;winningCollection:string;winningTokenId:string;endTime:string};
 type Artwork = { rows:number[]; foreground?:string; background?:string };
 function timeLeft(ms:number):string { const seconds=Math.max(0,Math.floor(ms/1000));return `${String(Math.floor(seconds/60)).padStart(2,"0")}:${String(seconds%60).padStart(2,"0")}`; }
 function dayClock(ms:number):string { const s=Math.max(0,Math.floor(ms/1000));return `${String(Math.floor(s/3600)).padStart(2,"0")}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
@@ -96,7 +101,11 @@ export default function GamePage(){
   const [owned,setOwned]=useState<OwnedToken[]>([]);
   const [ownedLoading,setOwnedLoading]=useState(false);
   const [selectedImage,setSelectedImage]=useState<string|null>(null);
-  const [tournamentInfo,setTournamentInfo]=useState<{entrants:number;pool:string;fee:string}|null>(null);
+  const [tournamentInfo,setTournamentInfo]=useState<TournamentInfo|null>(null);
+  const [leaderDay,setLeaderDay]=useState<string>(new Date().toISOString().slice(0,10));
+  const [leaderInfo,setLeaderInfo]=useState<TournamentInfo|null>(null);
+  const [claimInfo,setClaimInfo]=useState<{joined:boolean;resultSubmitted:boolean;prizeClaimed:boolean;refundClaimed:boolean;score:bigint}|null>(null);
+  const [entryStep,setEntryStep]=useState("");
   const [daily,setDaily]=useState<Daily|null>(null);
   const [preview,setPreview]=useState<Artwork|null>(null);
   const [now,setNow]=useState(0);
@@ -233,13 +242,13 @@ export default function GamePage(){
   useEffect(()=>{
     const update=async()=>{
       try{
-        const [a,b]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${API}/leaderboard`)]);
+        const [a,b]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${API}/leaderboard?day=${leaderDay}`)]);
         if(mounted.current){setLive(a.sessions);setLeaders(b.entries);}
       }catch{/* Keep game playable if spectator feed is unavailable. */}
     };
     void update();const id=window.setInterval(()=>void update(),12000);
     return ()=>window.clearInterval(id);
-  },[]);
+  },[leaderDay]);
 
   const refreshEntry=useCallback(async(walletAddress:`0x${string}`,c:Identity,id:number)=>{
     if(!Number.isInteger(id)||id<(c==="face"?1:0))return;
@@ -275,24 +284,27 @@ export default function GamePage(){
     setWallet(accounts[0] as `0x${string}`);
     setMessage("WALLET CONNECTED");
   };
-  const payEntry=async()=>{
+  const payEntry=async():Promise<void>=>{
     if(!wallet)throw new Error("Connect wallet first");
     const nft=nftAddress(collection);
     const owner=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).readContract({address:nft,abi:ABI,functionName:"ownerOf",args:[BigInt(tokenId)]});
     if(owner.toLowerCase()!==wallet.toLowerCase())throw new Error("Connected wallet is not the current NFT owner. TBA/delegation entry is not yet in this browser flow.");
     const client=walletClient();
+    // One guided PAY & PLAY interaction. A first-time ERC-20 allowance
+    // still requires its own on-chain approval transaction.
     if(allowance<fee){
-      setWalletStatus("APPROVE OCH IN WALLET");
+      setEntryStep("1/3 · APPROVE OCH");setWalletStatus("APPROVE OCH IN WALLET");
       const hash=await client.writeContract({address:OCH,abi:ABI,functionName:"approve",args:[TOURNAMENT,fee]});
-      const receipt=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).waitForTransactionReceipt({hash});if(receipt.status!=="success")throw new Error("OCH approval reverted");
-      await refreshEntry(wallet,collection,tokenId);
-      setMessage("APPROVED · CLICK ENTER AGAIN");return;
+      const receipt=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).waitForTransactionReceipt({hash});
+      if(receipt.status!=="success")throw new Error("OCH approval reverted");
+      setAllowance(fee);
     }
+    setEntryStep("2/3 · CONFIRM TOURNAMENT ENTRY");
     setWalletStatus("CONFIRM ENTRY IN WALLET");
     const hash=await client.writeContract({address:TOURNAMENT,abi:ABI,functionName:"enter",args:[nft,BigInt(tokenId)]});
     const receipt=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).waitForTransactionReceipt({hash});if(receipt.status!=="success")throw new Error("Tournament entry reverted");
-    await refreshEntry(wallet,collection,tokenId);
-    setMessage("ENTRY CONFIRMED · START GAME");
+    setEntered(true);
+    setMessage("ENTRY CONFIRMED · STARTING GAME");
   };
   const submitScore=async()=>{
     if(!session||!wallet)throw new Error("A connected wallet and completed session are required");
@@ -305,8 +317,14 @@ export default function GamePage(){
     setScoreSubmitted(true);setWalletStatus("SCORE RECORDED ON CHAIN");setMessage("SCORE RECORDED ON CHAIN");
   };
   const beginRanked=async()=>{
+    if(busyRef.current)return;
     if(!wallet){await connectWallet();return;}
-    if(!entered){await payEntry();return;}
+    busyRef.current=true;setBusy(true);setError("");
+    try {
+      if(!entered) await payEntry();
+      setEntryStep("3/3 · SIGN GAME SESSION");
+    } catch(e){setError(e instanceof Error?e.message:String(e));busyRef.current=false;setBusy(false);return;}
+    busyRef.current=false;setBusy(false);
     await makeSession();
   };
   const makeSession=async()=>{
@@ -433,10 +451,43 @@ export default function GamePage(){
   useEffect(()=>{
     if(screen!=="mode"&&screen!=="entry")return;
     let cancelled=false;
-    void readJSON<{entrants:number;pool:string;fee:string}>(`${API}/tournament`)
+    void readJSON<TournamentInfo>(`${API}/tournament`)
       .then(v=>{if(!cancelled){setTournamentInfo(v);setFee(BigInt(v.fee));}}).catch(()=>{});
     return ()=>{cancelled=true;};
   },[screen]);
+  useEffect(()=>{
+    if(screen!=="leaderboard")return;
+    let cancelled=false;
+    void readJSON<TournamentInfo>(`${API}/tournament?day=${leaderDay}`).then(t=>{if(!cancelled)setLeaderInfo(t);}).catch(()=>{if(!cancelled)setLeaderInfo(null);});
+    return ()=>{cancelled=true;};
+  },[screen,leaderDay]);
+  useEffect(()=>{
+    if(screen!=="leaderboard"||!wallet||!leaderInfo)return;
+    let cancelled=false;
+    const client=injected()?createPublicClient({transport:custom(injected()!)}):publicRpc;
+    void client.readContract({address:TOURNAMENT,abi:ABI,functionName:"getEntry",args:[BigInt(leaderInfo.day),nftAddress(collection),BigInt(tokenId)]})
+      .then(e=>{if(!cancelled)setClaimInfo({joined:e.joined,resultSubmitted:e.resultSubmitted,prizeClaimed:e.prizeClaimed,refundClaimed:e.refundClaimed,score:e.score});})
+      .catch(()=>{if(!cancelled)setClaimInfo(null);});
+    return ()=>{cancelled=true;};
+  },[screen,leaderInfo,wallet,collection,tokenId]);
+  const onchainTournamentAction=async(fn:"finalize"|"claimPrize"|"claimRefund")=>{
+    if(!wallet){await connectWallet();return;}
+    if(!leaderInfo)throw new Error("Tournament data unavailable");
+    setBusy(true);setError("");
+    try{
+      const hash=fn==="finalize"
+        ?await walletClient().writeContract({address:TOURNAMENT,abi:ABI,functionName:"finalize",args:[BigInt(leaderInfo.day)]})
+        :fn==="claimPrize"
+          ?await walletClient().writeContract({address:TOURNAMENT,abi:ABI,functionName:"claimPrize",args:[BigInt(leaderInfo.day),nftAddress(collection),BigInt(tokenId)]})
+          :await walletClient().writeContract({address:TOURNAMENT,abi:ABI,functionName:"claimRefund",args:[BigInt(leaderInfo.day),nftAddress(collection),BigInt(tokenId)]});
+      const receipt=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).waitForTransactionReceipt({hash});
+      if(receipt.status!=="success")throw new Error("Transaction reverted");
+      const fresh=await readJSON<TournamentInfo>(`${API}/tournament?day=${leaderDay}`);
+      setLeaderInfo(fresh);setMessage("TRANSACTION CONFIRMED");
+      const e=await (injected()?createPublicClient({transport:custom(injected()!)}):publicRpc).readContract({address:TOURNAMENT,abi:ABI,functionName:"getEntry",args:[BigInt(fresh.day),nftAddress(collection),BigInt(tokenId)]});
+      setClaimInfo({joined:e.joined,resultSubmitted:e.resultSubmitted,prizeClaimed:e.prizeClaimed,refundClaimed:e.refundClaimed,score:e.score});
+    }finally{setBusy(false);}
+  };
   const watch=(id:string)=>{
     spectatorRef.current=true;setSpectating(true);setScreen("watch");setMode("ranked");setPosition(null);setMessage("WATCHING LIVE GAME");
     window.history.replaceState({},"",`/game?watch=${encodeURIComponent(id)}`);
@@ -491,7 +542,7 @@ export default function GamePage(){
     <div className="f64-odds"><span>7–13 STEPS</span><strong className="f64-odds-percent">{showOdds?`${probability}%`:"—"}</strong><span>{showOdds?`${hitCount}/7 CHANCES HIT GREEN`:"CHOOSE YOUR START PIXEL"}</span></div>
     <div className="f64-legend"><span><i className="f64-legend-start"/> START</span><span><i className="f64-legend-hit"/> POSSIBLE HIT</span><span><i className="f64-legend-miss"/> POSSIBLE MISS</span></div>
     <div className={styles.readout} aria-live="polite">{busy&&!animation?"LOADING…":message}</div>
-    <div className={styles.stats}><span>HITS <strong>{current.hits}</strong></span><span>AT RISK <strong>{current.roundPoints}</strong></span><span>BANKED <strong>{current.totalPoints}</strong></span></div>
+    <div className={`${styles.stats} f64-stats-v21`}><span>BANKED <strong>{current.totalPoints}</strong></span><span className="f64-risk">AT RISK <strong>{current.roundPoints}</strong></span><span>PRIZE POOL <strong>{mode==="ranked"&&tournamentInfo?`${(Number(BigInt(tournamentInfo.pool))/1e18).toLocaleString(undefined,{maximumFractionDigits:2})}`:"—"}</strong><em>OCH</em></span></div>
   </>;
   return <div className={`${styles.page} f64-flow-page`}>
     <header className={styles.header}><Link href="/" className={styles.brand}>64 FACES</Link><nav><span>FACE64 / ARCADE</span><button className="f64-text-btn" onClick={resetFlow}>HOME ↗</button></nav></header>
@@ -515,6 +566,7 @@ export default function GamePage(){
           <div className="f64-flow-wallet">{wallet?`WALLET ${wallet.slice(0,6)}…${wallet.slice(-4)}`:"WALLET NOT CONNECTED"} <button onClick={()=>void connectWallet().catch(e=>setError(String(e)))}>{wallet?"CHANGE":"CONNECT"}</button></div>
           {ownedLoading&&<p className="f64-sub">LOOKING FOR YOUR NFTS…</p>}
           {owned.length>0&&<div className="f64-token-grid">{owned.slice(0,100).map(t=><button key={t.tokenId} className="f64-token-card" onClick={()=>choosePlayer(t.tokenId,t.image)}>{t.image?<Image unoptimized width={100} height={100} src={t.image} alt={t.name||displayName(collection,t.tokenId)}/>:<div className="f64-token-fallback">{collection==="face"?"8×8":"20×20"}</div>}<span>#{t.tokenId}</span></button>)}</div>}
+          {!ownedLoading&&wallet&&owned.length===0&&<div className="f64-empty-market"><p>NO {collection==="face"?"64 FACES":"HOODIES"} FOUND IN THIS WALLET</p><a href={`https://opensea.io/assets/robinhood/${nftAddress(collection)}`} target="_blank" rel="noopener noreferrer">FIND ON OPENSEA ↗</a><p>OR USE ANY TOKEN ID FOR FREE PRACTICE</p></div>}
           <div className="f64-manual"><label htmlFor="f64-id">TOKEN ID</label><input id="f64-id" type="number" value={tokenId} min={collection==="face"?1:0} max={collection==="face"?512:5999} onChange={e=>setTokenId(Number(e.target.value))}/><button onClick={()=>{if(Number.isInteger(tokenId)&&tokenId>=(collection==="face"?1:0)&&tokenId<=(collection==="face"?512:5999))choosePlayer(tokenId);else setError("Invalid token ID");}}>SELECT →</button></div>
           <p className="f64-flow-note">FREE MODE CAN USE ANY VALID TOKEN ID. TOURNAMENT MODE REQUIRES OWNERSHIP.</p>
           <button className="f64-back" onClick={()=>setScreen("collection")}>← BACK</button>
@@ -530,15 +582,16 @@ export default function GamePage(){
           {selectedImage&&<Image unoptimized width={110} height={110} className="f64-selected-image" src={selectedImage} alt={displayName(collection,tokenId)}/>}
           <div className="f64-entry-price">{mode==="free"?"FREE":`${Number(fee)/1e18} OCH`}</div>
           {mode==="ranked"&&<p className="f64-sub">CURRENT POOL: {tournamentInfo?`${Number(tournamentInfo.pool)/1e18} OCH`:"—"} · {tournamentInfo?.entrants??"—"} ENTRIES</p>}
-          {mode==="ranked"&&<><div className="f64-flow-wallet">{wallet?`${wallet.slice(0,6)}…${wallet.slice(-4)}`:"CONNECT A WALLET TO ENTER"}<button onClick={()=>void connectWallet().catch(e=>setError(String(e)))}>CONNECT</button></div><p className="f64-flow-note">{walletStatus}</p></>}
-          <div className="f64-flow-actions"><button disabled={busy} onClick={()=>void (mode==="free"?makeFreeSession():beginRanked()).catch(e=>setError(String(e)))}>{busy?"WAIT…":mode==="free"?"START FREE GAME":!wallet?"CONNECT WALLET":entered?"START TOURNAMENT":allowance<fee?"APPROVE OCH":"ENTER TOURNAMENT"}</button></div>
+          {mode==="ranked"&&<p className="f64-flow-note"><a className="f64-swap-link" href="https://onchainhoodies.xyz/och#swap" target="_blank" rel="noopener noreferrer">NEED OCH? BUY OCH ↗</a></p>}
+          {mode==="ranked"&&<><div className="f64-flow-wallet">{wallet?`${wallet.slice(0,6)}…${wallet.slice(-4)}`:"CONNECT A WALLET TO ENTER"}<button onClick={()=>void connectWallet().catch(e=>setError(String(e)))}>CONNECT</button></div><p className="f64-flow-note">{entryStep||walletStatus}</p></>}
+          <div className="f64-flow-actions"><button disabled={busy} onClick={()=>void (mode==="free"?makeFreeSession():beginRanked()).catch(e=>setError(String(e)))}>{busy?"WAIT…":mode==="free"?"START FREE GAME":!wallet?"CONNECT WALLET":entered?"START GAME":"PAY & PLAY"}</button></div>
           <button className="f64-back" onClick={()=>setScreen("mode")}>← BACK TO MODES</button>
         </div>}
         {(screen==="game"||screen==="watch")&&<div className="f64-screen f64-game-screen"><div className="f64-game-center">{gameBoard}</div>
           {screen==="game"&&!spectating?<><div className="f64-controls3">
-            <button type="button" disabled={!gameReady||busy||animation} onPointerDown={e=>{e.preventDefault();startHold();}} onPointerUp={stopHold} onPointerLeave={stopHold} onPointerCancel={stopHold}>NEXT PIXEL <small>HOLD TO SCROLL</small></button>
-            <button type="button" disabled={!gameReady||busy||animation} onClick={()=>void action()}>RUN <small>↵ ENTER</small></button>
-            <button type="button" disabled={!decision||busy||animation} onClick={()=>void bank()}>BANK <small>B KEY</small></button>
+            <button type="button" disabled={!gameReady||busy||animation} onPointerDown={e=>{e.preventDefault();startHold();}} onPointerUp={stopHold} onPointerLeave={stopHold} onPointerCancel={stopHold}>NEXT PIXEL</button>
+            <button type="button" className="f64-bank-button" disabled={!decision||busy||animation} onClick={()=>void bank()}>BANK</button>
+            <button type="button" className="f64-run-button" disabled={!gameReady||busy||animation} onClick={()=>void action()}>RUN</button>
           </div><p className="f64-flow-note">SPACE: NEXT PIXEL · ENTER: RUN · B: BANK · {decision?"BANK ANYTIME AFTER A HIT":"CHOOSE YOUR START POSITION"}</p></>:
           <button className="f64-wideButton" onClick={backToPlayer}>← LEAVE SPECTATOR</button>}
           {session&&<p className="f64-flow-note">{session.status==="playing"?"4-MINUTE INACTIVITY LIMIT":"SESSION ENDED"} · {mode==="ranked"?"PAID RANKED":"FREE PRACTICE"}</p>}
@@ -548,7 +601,12 @@ export default function GamePage(){
           <p className="f64-flow-note">{mode==="free"?"PRACTICE SCORE · NOT ON CHAIN":"SCORE RECORDED ON-CHAIN ✓"}</p>}
           <div className="f64-flow-actions"><button className="f64-alt" onClick={()=>setScreen("leaderboard")}>VIEW LEADERBOARD →</button></div>
         </div>}
-        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><p className="f64-sub">{daily?.day||"TODAY"} · RANKED RESULTS</p>
+        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderDay===new Date().toISOString().slice(0,10)?"selected":""} onClick={()=>setLeaderDay(new Date().toISOString().slice(0,10))}>TODAY</button><button className={leaderDay!==new Date().toISOString().slice(0,10)?"selected":""} onClick={()=>setLeaderDay(new Date(Date.now()-86400000).toISOString().slice(0,10))}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · RANKED RESULTS</p>
+          {leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
+          {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
+          {leaderInfo.finalized&&leaderInfo.refundAll&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
+          {leaderInfo.finalized&&!leaderInfo.refundAll&&claimInfo?.resultSubmitted&&!claimInfo.prizeClaimed&&claimInfo.score===BigInt(leaderInfo.winningScore)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimPrize").catch(e=>setError(String(e)))}>CLAIM WINNER PRIZE TO NFT WALLET</button>}
+          {leaderInfo.finalized&&!leaderInfo.refundAll&&<p>WINNING SCORE {leaderInfo.winningScore} · {leaderInfo.winnerCount} WINNER(S)</p>}</div>}
           <div className="f64-leader-list">{leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}</span><strong>{entry.score} PTS</strong></button>):<p>NO COMPLETED RANKED GAMES YET.</p>}</div>
           <p className="f64-flow-note">LEADERBOARD SHOWS COMPLETED WORKER SESSIONS. ONLY SUCCESSFULLY SUBMITTED SCORES COUNT ON-CHAIN.</p>
           <div className="f64-flow-actions"><button onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
@@ -559,7 +617,7 @@ export default function GamePage(){
         </div>}
         {error&&<div className={styles.error} role="alert">{error}</div>}
       </section>
-      <p className="f64-flow-footer">FACE64 MAINNET PILOT · CHANCE-BASED SERVER ROULETTE IS NOT INDEPENDENTLY VERIFIABLE · TESTING ONLY</p>
+      <p className="f64-flow-footer">HOODJOURNEY: PLAY RECORDS ARE NOT YET ATTESTED ON-CHAIN · FACE64 MAINNET PILOT · CHANCE-BASED SERVER ROULETTE IS NOT INDEPENDENTLY VERIFIABLE · TESTING ONLY</p>
     </main>
   </div>;
 }
