@@ -102,7 +102,7 @@ export default function GamePage(){
   const [ownedLoading,setOwnedLoading]=useState(false);
   const [selectedImage,setSelectedImage]=useState<string|null>(null);
   const [tournamentInfo,setTournamentInfo]=useState<TournamentInfo|null>(null);
-  const [leaderDay,setLeaderDay]=useState<string>(new Date().toISOString().slice(0,10));
+  const [leaderDay,setLeaderDay]=useState<string>("");
   const [leaderInfo,setLeaderInfo]=useState<TournamentInfo|null>(null);
   const [claimInfo,setClaimInfo]=useState<{day:string;collection:Identity;tokenId:number;joined:boolean;resultSubmitted:boolean;prizeClaimed:boolean;refundClaimed:boolean;score:bigint}|null>(null);
   const [entryStep,setEntryStep]=useState("");
@@ -133,6 +133,7 @@ export default function GamePage(){
   const tokenRef=useRef("");
   const sessionRef=useRef<Session|null>(null);
   const spectatorRef=useRef(false);
+  const todayDay=now ? new Date(now).toISOString().slice(0,10) : "";
   const current= session?.state ?? defaultState;
   const displayRows=session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? []);
   const initialPreview=!session&&!!preview;
@@ -220,7 +221,7 @@ export default function GamePage(){
   },[syncPublic]);
 
   useEffect(()=>{
-    const first=window.setTimeout(()=>setNow(Date.now()),0);
+    const first=window.setTimeout(()=>{ const t=Date.now(); setNow(t); setLeaderDay(new Date(t).toISOString().slice(0,10)); },0);
     const id=window.setInterval(()=>setNow(Date.now()),1000);
     return ()=>{window.clearTimeout(first);window.clearInterval(id);};
   },[]);
@@ -241,6 +242,7 @@ export default function GamePage(){
 
   useEffect(()=>{
     const update=async()=>{
+      if(!leaderDay)return;
       try{
         const [a,b]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${API}/leaderboard?day=${leaderDay}`)]);
         if(mounted.current){setLive(a.sessions);setLeaders(b.entries);}
@@ -473,7 +475,7 @@ export default function GamePage(){
     return ()=>{cancelled=true;};
   },[screen]);
   useEffect(()=>{
-    if(screen!=="leaderboard")return;
+    if(screen!=="leaderboard"||!leaderDay)return;
     let cancelled=false;
     void Promise.resolve().then(()=>{if(!cancelled){setLeaderInfo(null);setClaimInfo(null);}});
     void readJSON<TournamentInfo>(`${API}/tournament?day=${leaderDay}`).then(t=>{if(!cancelled)setLeaderInfo(t);}).catch(()=>{if(!cancelled)setLeaderInfo(null);});
@@ -621,7 +623,7 @@ export default function GamePage(){
           <p className="f64-flow-note">{mode==="free"?"PRACTICE SCORE · NOT ON CHAIN":"SCORE RECORDED ON-CHAIN ✓"}</p>}
           <div className="f64-flow-actions"><button className="f64-alt" onClick={()=>setScreen("leaderboard")}>VIEW LEADERBOARD →</button></div>
         </div>}
-        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderDay===new Date().toISOString().slice(0,10)?"selected":""} onClick={()=>setLeaderDay(new Date().toISOString().slice(0,10))}>TODAY</button><button className={leaderDay!==new Date().toISOString().slice(0,10)?"selected":""} onClick={()=>setLeaderDay(new Date(Date.now()-86400000).toISOString().slice(0,10))}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · RANKED RESULTS</p>
+        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · RANKED RESULTS</p>
           {leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
           {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
           {leaderInfo.finalized&&leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
