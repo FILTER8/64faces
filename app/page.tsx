@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Face } from "@/lib/shared";
+import FaceProfile from "./FaceProfile";
 import { BLACK, CONTRACT, GREEN, TRAIT_NAMES } from "@/lib/shared";
+import { createPublicClient, createWalletClient, custom, http, parseAbi, type Address } from "viem";
 
 type Batch = { faces: Face[]; totalSupply: number; firstTokenId: number; nextCursor: number | null; error?: string };
 const OPENSEA = "https://opensea.io/collection/64-faces";
@@ -11,6 +13,11 @@ const ORIGINAL = "https://x.com/0xfilter8/status/2108099493740646415";
 const EXPLORER = `https://robinhoodchain.blockscout.com/address/${CONTRACT}`;
 const FILTER_ALL = "__all__";
 const PAGE_SIZE = 24;
+const mintChain = { id:4663, name:"Robinhood Chain", nativeCurrency:{name:"Ether",symbol:"ETH",decimals:18}, rpcUrls:{default:{http:["https://rpc.mainnet.chain.robinhood.com"]}} } as const;
+const mintClient = createPublicClient({chain: mintChain, transport: http(mintChain.rpcUrls.default.http[0])});
+const mintAbi = parseAbi(["function mint(uint256 amount) payable", "function price() view returns (uint256)", "function maxSupply() view returns (uint256)", "function totalSupply() view returns (uint256)", "function maxMintsPerWallet() view returns (uint256)"]);
+type InjectedWallet = {request(args:{method:string;params?:unknown[]}):Promise<unknown>};
+
 
 function PixelFace({ face, className = "" }: { face: Face | null; className?: string }) {
   if (!face) return <div className={`pixel-art ${className}`} aria-label="Waiting for on-chain art" style={{ background: BLACK }} />;
@@ -244,6 +251,58 @@ function rarityScore(face: Face, totals: Record<string, Record<string, number>>,
 }
 
 export default function Home() {
+  const [mintBusy, setMintBusy] = useState(false);
+  const [mintMessage, setMintMessage] = useState("");
+  const [soldOut, setSoldOut] = useState(false);
+  const [mintQty, setMintQty] = useState(1);
+  const [mintPrice, setMintPrice] = useState<bigint | null>(null);
+  const [mintCap, setMintCap] = useState<bigint | null>(null);
+  const [mintSupply, setMintSupply] = useState<bigint | null>(null);
+  const [walletMintLimit, setWalletMintLimit] = useState<bigint | null>(null);
+  const refreshMint = useCallback(async () => {
+    try {
+      const [price, cap, supply, walletLimit] = await Promise.all([
+        mintClient.readContract({address: CONTRACT, abi: mintAbi, functionName: "price"}),
+        mintClient.readContract({address: CONTRACT, abi: mintAbi, functionName: "maxSupply"}),
+        mintClient.readContract({address: CONTRACT, abi: mintAbi, functionName: "totalSupply"}),
+        mintClient.readContract({address: CONTRACT, abi: mintAbi, functionName: "maxMintsPerWallet"}),
+      ]);
+      setMintPrice(price);setMintCap(cap);setMintSupply(supply);setWalletMintLimit(walletLimit);setSoldOut(cap !== 0n && supply >= cap);
+    } catch { setMintMessage("Mint data unavailable. Please try refreshing."); }
+  }, []);
+  useEffect(() => { void Promise.resolve().then(refreshMint); }, [refreshMint]);
+  async function mintFaces() {
+    if (mintBusy) return;
+    setMintBusy(true);setMintMessage("");
+    try {
+      const p = (window as Window & {ethereum?: InjectedWallet}).ethereum;
+      if (!p) throw Error("Connect an EVM wallet to mint.");
+      const [liveSupply, cap, price] = await Promise.all([
+        mintClient.readContract({address:CONTRACT,abi:mintAbi,functionName:"totalSupply"}),
+        mintClient.readContract({address:CONTRACT,abi:mintAbi,functionName:"maxSupply"}),
+        mintClient.readContract({address:CONTRACT,abi:mintAbi,functionName:"price"}),
+      ]);
+      if (cap !== 0n && liveSupply + BigInt(mintQty) > cap) {setSoldOut(liveSupply >= cap);throw Error("Not enough Faces remaining for that quantity.");}
+      if (!Number.isSafeInteger(mintQty) || mintQty < 1 || mintQty > 20) throw Error("Choose between 1 and 20 Faces.");
+      const accounts=await p.request({method:"eth_requestAccounts"}) as string[];
+      if (!accounts?.[0] || !/^0x[0-9a-fA-F]{40}$/.test(accounts[0])) throw Error("No wallet account selected.");
+      const wallet=accounts[0] as Address;
+      const chainId=await p.request({method:"eth_chainId"}) as string;
+      if (Number(BigInt(chainId)) !== mintChain.id) {
+        try {await p.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x1237"}]});}
+        catch {await p.request({method:"wallet_addEthereumChain",params:[{chainId:"0x1237",chainName:mintChain.name,nativeCurrency:mintChain.nativeCurrency,rpcUrls:[mintChain.rpcUrls.default.http[0]]}]});await p.request({method:"wallet_switchEthereumChain",params:[{chainId:"0x1237"}]});}
+      }
+      await mintClient.simulateContract({address:CONTRACT,abi:mintAbi,functionName:"mint",args:[BigInt(mintQty)],value:price * BigInt(mintQty),account:wallet});
+      const client=createWalletClient({account:wallet,chain:mintChain,transport:custom(p)});
+      const hash=await client.writeContract({address:CONTRACT,abi:mintAbi,functionName:"mint",args:[BigInt(mintQty)],value:price * BigInt(mintQty),account:wallet,chain:mintChain});
+      setMintMessage("MINT SUBMITTED · WAITING FOR CONFIRMATION");
+      const receipt=await mintClient.waitForTransactionReceipt({hash});
+      if(receipt.status!=="success") throw Error("Mint transaction reverted.");
+      setMintMessage("MINT CONFIRMED · REFRESH TO SEE YOUR FACE"); void refreshMint();
+    } catch (e) {setMintMessage(e instanceof Error?e.message:"Mint failed");}
+    finally {setMintBusy(false);}
+  }
+
   const [faces, setFaces] = useState<Face[]>([]);
   const [totalSupply, setTotalSupply] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -369,6 +428,7 @@ const chooseRandom = useCallback(() => {
           <a className="wordmark" href="#top" aria-label="64 Faces home">64 FACES</a>
           <nav className="top-links" aria-label="Main navigation">
             <a href="/game">GAME ↗</a>
+            <a href="#my-faces">MY FACES</a>
             <a href="#explore">EXPLORE</a>
             <a href="#api">API</a>
             <a href="#about">ABOUT</a>
@@ -383,7 +443,8 @@ const chooseRandom = useCallback(() => {
             <div className="kicker">[ ROBINHOOD CHAIN ]</div>
             <h1>64<br />FACES.</h1>
             <p className="hero-copy">64 PIXELS. 2 COLORS. 512 POSSIBLE FACES.<br /><br />A ONE-PROMPT EXPERIMENT IN GENERATIVE ART, AI AND CREATIVE CONSTRAINTS. EVERY FACE IS AN 8×8 BITMAP RENDERED BY A FULLY ON-CHAIN SMART CONTRACT.</p>
-            <div className="hero-actions"><a className="outline-btn" href="/game">▶ PLAY FACE64 / DAILY ARCADE →</a></div>
+            <div className="hero-actions"><a className="outline-btn" href="/game">▶ PLAY FACE64 / DAILY ARCADE →</a><a className="outline-btn" href="#my-faces">MY FACES / CLAIM PRIZES →</a><a className="outline-btn" href="#mint-face">{soldOut ? "BUY ON OPENSEA ↗" : "MINT A FACE ↓"}</a></div>
+
             <div className="hero-data">
               <div><span>GRID</span><strong>8 × 8</strong></div>
               <div><span>PALETTE</span><strong>1 BIT</strong></div>
@@ -494,13 +555,50 @@ const chooseRandom = useCallback(() => {
           )}
         </section>
 
+        <section className="section" id="mint-face">
+          <div className="section-top"><h2 className="section-title">[ MINT A FACE ]</h2><span>FULLY ON-CHAIN · ROBINHOOD CHAIN</span></div>
+          <div style={{border:"1px solid #CCFF00",padding:"clamp(20px, 4vw, 38px)",maxWidth:900,margin:"0 auto",display:"grid",gap:28}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",gap:16,flexWrap:"wrap"}}>
+              <div style={{display:"grid",gap:12}}>
+                <div className="kicker">64 FACES / PUBLIC MINT</div>
+                <h3 style={{fontWeight:400,fontSize:"clamp(23px,4vw,36px)",margin:0}}>{soldOut ? "ALL FACES MINTED" : "YOUR NEXT ARCADE IDENTITY"}</h3>
+                <p className="status" style={{margin:0}}>512 UNIQUE 8×8 FACES · FULLY ON-CHAIN</p>
+              </div>
+              <div style={{border:"1px solid #CCFF00",padding:"12px 18px",minWidth:160,textAlign:"center"}}>
+                <span style={{display:"block",fontSize:11}}>MINTED</span>
+                <strong style={{display:"block",fontWeight:400,fontSize:24,marginTop:6}}>{mintSupply === null ? "…" : `${mintSupply.toString()} / ${(mintCap ?? 512n).toString()}`}</strong>
+              </div>
+            </div>
+            <div style={{height:1,background:"#CCFF00",opacity:.7}} />
+            {soldOut ? <a className="outline-btn face-action-primary" href={OPENSEA} target="_blank" rel="noreferrer" style={{textAlign:"center",padding:18}}>BUY ON OPENSEA ↗</a> : <div style={{display:"grid",gap:22}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+                <label htmlFor="face-mint-quantity" style={{fontSize:13}}>QUANTITY</label>
+                <div style={{display:"grid",gridTemplateColumns:"52px 74px 52px",height:50,border:"1px solid #CCFF00"}}>
+                  <button type="button" aria-label="Decrease quantity" disabled={mintBusy || mintQty <= 1} onClick={() => setMintQty(n => Math.max(1,n-1))} style={{border:0,borderRight:"1px solid #CCFF00",background:"transparent",fontSize:22}}>−</button>
+                  <input id="face-mint-quantity" aria-label="Mint quantity" type="number" min={1} max={20} value={mintQty} onChange={e => {const n=Number(e.target.value);if(Number.isInteger(n))setMintQty(Math.max(1,Math.min(20,n)));}} style={{width:"100%",minWidth:0,background:"#000",border:0,textAlign:"center",appearance:"textfield"}} />
+                  <button type="button" aria-label="Increase quantity" disabled={mintBusy || mintQty >= 20} onClick={() => setMintQty(n => Math.min(20,n+1))} style={{border:0,borderLeft:"1px solid #CCFF00",background:"transparent",fontSize:22}}>+</button>
+                </div>
+              </div>
+              <div style={{display:"grid",gap:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"center"}}><span>PRICE PER FACE</span><strong style={{fontSize:16,fontWeight:400}}>{mintPrice === null ? "…" : `${Number(mintPrice)/1e18} ETH`}</strong></div>
+                <div style={{height:1,background:"#CCFF00",opacity:.45}} />
+                <div style={{display:"flex",justifyContent:"space-between",gap:16,alignItems:"center"}}><span>TOTAL</span><strong style={{fontSize:22,fontWeight:400}}>{mintPrice === null ? "…" : `${(Number(mintPrice)*mintQty/1e18).toFixed(4)} ETH`}</strong></div>
+              </div>
+              <button type="button" disabled={mintBusy || mintPrice === null} onClick={() => void mintFaces()} style={{width:"100%",background:"#CCFF00",color:"#000000",border:"1px solid #CCFF00",padding:"18px 20px",fontSize:16,fontWeight:400}}>{mintBusy ? "CONFIRMING…" : `MINT ${mintQty} FACE${mintQty===1?"":"S"} →`}</button>
+              {walletMintLimit !== null && walletMintLimit > 0n && <p className="status" style={{margin:0,opacity:.8}}>MAX {walletMintLimit.toString()} PUBLIC MINTS PER WALLET · CONTRACT ENFORCED</p>}
+            </div>}
+            {mintMessage && <p className="status" role="status" style={{margin:0}}>{mintMessage}</p>}
+          </div>
+        </section>
+        <FaceProfile supply={totalSupply} firstId={faces[0]?.id ?? 1} />
+
         <section className="section" id="about">
           <div className="section-top"><h2 className="section-title">[ ABOUT THE EXPERIMENT ]</h2><span>ONE PROMPT / FULLY ON-CHAIN</span></div>
           <div className="body-text">
             <p>64 FACES BEGAN WITH ONE QUESTION: WHAT HAPPENS WHEN AN AI IS GIVEN ONLY 64 PIXELS, TWO COLORS AND THE TASK OF CREATING AN ENTIRE GENERATIVE COLLECTION?</p>
             <p>THE RESULT IS A SOLIDITY-BASED DRAWING SYSTEM WITH SEVEN TRAIT CATEGORIES: PALETTE, HEAD SHAPE, HAIR, EYES, EYEBROWS, EXPRESSION AND ACCESSORY. THE ARTWORK AND ITS METADATA ARE GENERATED DIRECTLY BY THE CONTRACT ON ROBINHOOD CHAIN.</p>
             <p>WHO IS THE ARTIST — THE PERSON WRITING THE PROMPT, THE AI INTERPRETING IT, OR THE CODE RENDERING EACH FACE?</p>
-            <p>NO MINTING ON THIS WEBSITE. THIS IS AN ARCHIVE AND EXPLORER FOR THE EXISTING ON-CHAIN COLLECTION.</p>
+            <p>64 FACES ARE PLAYABLE IDENTITIES IN THE FACE64 ARCADE. CONNECT YOUR WALLET TO MANAGE YOUR FACE ACCOUNT AND CLAIM GAME PRIZES.</p>
           </div>
           <div className="link-row">
             <a className="outline-btn" href={OPENSEA} target="_blank" rel="noreferrer">OPENSEA ↗</a>

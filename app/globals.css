@@ -99,3 +99,74 @@ button:disabled { cursor: not-allowed; }
   min-width: 0;
   min-height: 0;
 }
+
+/* Owner profile and token-bound account */
+.face-profile-grid { display:flex; flex-wrap:wrap; gap:8px; margin:24px 0; }
+.face-profile-token { background:#000; border:1px solid #CCFF00; padding:12px 16px; }
+.face-profile-token.active { background:#CCFF00; color:#000; }
+.face-profile-detail { align-items:start; grid-template-columns:minmax(150px,240px) 1fr; }
+.face-profile-detail h3 { font-size:44px; font-weight:400; margin:12px 0; }
+.face-profile-address { overflow-wrap:anywhere; border:1px solid #CCFF00; padding:10px; margin:10px 0; }
+.face-profile-balances { display:flex; gap:18px; flex-wrap:wrap; margin:22px 0; }
+.face-profile-balances > div { border:1px solid #CCFF00; padding:14px; min-width:130px; }
+.face-profile-balances span { display:block; }
+.face-profile-balances strong { display:block; font-size:22px; font-weight:400; }
+.face-profile-prize { display:flex; justify-content:space-between; align-items:center; gap:12px; border-top:1px solid #CCFF00; padding:10px 0; flex-wrap:wrap; }
+.face-profile-input { display:block; width:100%; background:#000; border:1px solid #CCFF00; padding:12px; margin:10px 0; }
+@media(max-width:700px){.face-profile-detail{grid-template-columns:1fr}}
+
+/* Simple single-page owner card — extends the original gallery design. */
+.hero-actions { gap: 12px; align-items: center; }
+.hero-actions > a, .hero-actions > button { display:inline-flex; align-items:center; justify-content:center; white-space:normal; text-align:center; }
+.face-action-primary { background:var(--green); color:var(--black); }
+.face-action-primary:hover:not(:disabled) { background:var(--black); color:var(--green); }
+.face-profile-grid { gap:12px; }
+.face-profile-token { display:flex; align-items:center; flex-direction:column; gap:8px; width:105px; min-width:0; padding:10px; }
+.face-profile-token.active { background:var(--green); color:var(--black); }
+.face-profile-token .face-owner-pixels { width:100%; border:1px solid var(--green); }
+.face-profile-token.active .face-owner-pixels { border-color:#000; }
+.face-owner-pixels { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); grid-template-rows:repeat(8,minmax(0,1fr)); width:100%; aspect-ratio:1; image-rendering:pixelated; overflow:hidden; }
+.face-owner-pixels > span:not(.face-owner-loading) { display:block; min-width:0; min-height:0; }
+.face-owner-loading { grid-area:1 / 1 / -1 / -1; align-self:center; justify-self:center; font-size:9px; text-align:center; }
+.face-profile-detail { grid-template-columns:minmax(190px,300px) minmax(0,1fr); gap:32px; }
+.face-profile-portrait { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.face-profile-portrait .face-owner-pixels { border:1px solid var(--green); padding:12px; }
+.face-profile-portrait h3 { margin:0; font-size:clamp(24px,4vw,44px); }
+.face-profile-info { min-width:0; }
+.face-profile-balances { margin:14px 0 18px; }
+.face-profile-rewards { border-top:1px solid var(--green); margin-top:28px; padding-top:18px; }
+.face-profile-reward-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.face-profile-reward-heading > div { display:flex; gap:8px; }
+.face-profile-reward-heading .outline-btn { padding:7px 12px; min-height:32px; }
+.face-profile-prize small { opacity:.8; }
+.face-profile-wallet { border-top:1px solid var(--green); padding-top:20px; margin-top:20px; }
+.face-profile-wallet p { margin:14px 0 8px; }
+@media(max-width:700px){.face-profile-detail{grid-template-columns:1fr; gap:22px;} .face-profile-portrait .face-owner-pixels{max-width:290px;} .face-profile-token{width:88px;} }
+
+/* Small polish to the original one-page arcade layout. */
+.face-profile-actions { margin: 24px 0 26px; gap: 12px; }
+.face-profile-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0 30px; }
+.face-profile-stats > div { border:1px solid var(--green); padding:16px; }
+.face-profile-stats span,.face-profile-stats strong {display:block;}
+.face-profile-stats strong {font-size:clamp(24px,3vw,34px); margin-top:8px;}
+.face-profile-stats > small { grid-column:1/-1; opacity:.8; line-height:1.7; }
+.face-profile-rewards {padding-top:26px;margin-top:26px;}
+.face-profile-reward-heading { margin-bottom:20px; row-gap:16px; }
+.face-profile-prize {padding:18px 0;line-height:1.8;}
+.face-profile-reward-heading > div {gap:10px;}
+.face-mint-card {border:1px solid var(--green);padding:clamp(18px,3vw,36px);display:grid;grid-template-columns:1fr minmax(230px,370px);gap:30px;align-items:start;}
+.face-mint-card h3 {font-size:clamp(22px,3vw,36px);font-weight:400;line-height:1.3;margin:22px 0;}
+.face-mint-supply {font-size:clamp(18px,2vw,26px);margin-top:28px;}
+.face-mint-order {border:1px solid var(--green);padding:22px;display:flex;flex-direction:column;gap:16px;}
+.face-mint-order > label {display:block;}
+.face-mint-quantity {display:grid;grid-template-columns:45px minmax(0,1fr) 45px;border:1px solid var(--green);height:52px;}
+.face-mint-quantity button,.face-mint-quantity input {background:#000;color:var(--green);border:0;text-align:center;font:inherit;min-width:0;}
+.face-mint-quantity button {font-size:25px;cursor:pointer;}
+.face-mint-quantity button:first-child {border-right:1px solid var(--green)}
+.face-mint-quantity button:last-child {border-left:1px solid var(--green)}
+.face-mint-quantity input {appearance:textfield;}
+.face-mint-quantity input::-webkit-inner-spin-button {appearance:none;}
+.face-mint-total {display:flex;justify-content:space-between;gap:12px;align-items:center;}
+.face-mint-total strong {font-weight:400;}
+.face-mint-order .outline-btn {margin-top:10px;}
+@media(max-width:700px){.face-mint-card{grid-template-columns:1fr;}.face-profile-stats{gap:8px;}.face-profile-stats > div{padding:12px;}}

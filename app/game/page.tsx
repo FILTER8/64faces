@@ -174,7 +174,7 @@ export default function GamePage(){
   const [wallet,setWallet]=useState<`0x${string}`|null>(null);
   const [entered,setEntered]=useState(false);
   const [fee,setFee]=useState<bigint>(parseUnits("100",18));
-  const [allowance,setAllowance]=useState<bigint>(BigInt(0));
+  const [,setAllowance]=useState<bigint>(BigInt(0));
   const [walletStatus,setWalletStatus]=useState("CONNECT WALLET TO ENTER");
   const [scoreSubmitted,setScoreSubmitted]=useState(false);
   const mounted=useRef(true);
@@ -200,7 +200,7 @@ export default function GamePage(){
   const showOdds=!!session && gameReady && !spectating && !animation && current.phase!=="finished";
   // Do not present completed or abandoned sessions as live just because the
   // backend has not yet updated their persisted status.
-  const activeLive=[...live,...demoLive].filter(item=>
+  const activeLive=[...live.map(item=>({...item,liveMode:"ranked" as const})),...demoLive.map(item=>({...item,liveMode:"free" as const}))].filter(item=>
     item.status==="playing" &&
     typeof item.lastActionAt==="number" &&
     now>0 &&
@@ -719,7 +719,7 @@ export default function GamePage(){
           <div className="f64-flow-actions"><button onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
         </div>}
         {screen==="watch"&&!spectating&&<div className="f64-screen"><h2>WATCH LIVE</h2><p className="f64-sub">ACTIVE FACE64 GAMES · TOURNAMENT AND FREE</p>
-          <div className="f64-leader-list">{activeLive.length?activeLive.map(item=><button key={item.sessionId} onClick={()=>watch(item.sessionId, demoLive.some(d=>d.sessionId===item.sessionId)?"free":"ranked")}><span>●</span><span>{displayName(item.collection,item.tokenId)}{item.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>} · ROUND {Math.min(item.state.round+1,8)}/8</span><strong>{item.state.totalPoints} PTS</strong></button>):<p>NO LIVE GAMES RIGHT NOW.</p>}</div>
+          <div className="f64-leader-list">{activeLive.length?activeLive.map(item=><button key={item.sessionId} onClick={()=>watch(item.sessionId,item.liveMode)}><span>●</span><span>{displayName(item.collection,item.tokenId)}{item.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>} · ROUND {Math.min(item.state.round+1,8)}/8</span><strong>{item.state.totalPoints} PTS</strong></button>):<p>NO LIVE GAMES RIGHT NOW.</p>}</div>
           <div className="f64-flow-actions"><button onClick={()=>setScreen("leaderboard")}>LEADERBOARD</button><button className="f64-alt" onClick={resetFlow}>BACK TO START</button></div>
         </div>}
         {error&&<div className={styles.error} role="alert">{error}</div>}
