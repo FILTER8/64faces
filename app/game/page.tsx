@@ -38,6 +38,8 @@ function utcDayNumber() { return BigInt(Math.floor(Date.now()/86400000)); }
 const GREEN = "#CCFF00";
 const BLACK = "#000000";
 const N = 64;
+// A friendly 8x8 Face while the daily on-chain artwork is loading.
+const START_FACE_ROWS = [60, 66, 165, 129, 165, 153, 66, 60];
 type Identity = "face" | "hoodie";
 type Outcome = { start: number; steps: number; landing: number; hit: boolean; earned: number };
 type State = { round: number; phase: "ready" | "decision" | "finished"; rows: number[]; faceId: number; hits: number; roundPoints: number; totalPoints: number; lastOutcome: Outcome | null };
@@ -185,7 +187,7 @@ export default function GamePage(){
   const todayDay=now ? new Date(now).toISOString().slice(0,10) : "";
   const frame=spectating&&replay.length?replay[Math.min(replayIndex,replay.length-1)]:null;
   const current= frame?{...defaultState,round:frame.round,faceId:frame.faceId,rows:frame.rows,totalPoints:frame.totalPoints,roundPoints:frame.roundPoints}:session?.state ?? defaultState;
-  const displayRows=frame?frame.rows:session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? []);
+  const displayRows=frame?frame.rows:session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? START_FACE_ROWS);
   const initialPreview=!session&&!!preview;
   const previewFg=initialPreview?(preview?.foreground??GREEN):GREEN;
   const previewBg=initialPreview?(preview?.background??BLACK):BLACK;
@@ -210,8 +212,8 @@ export default function GamePage(){
   );
   const attractMode = !session && !spectating;
   const gameOverMode = !!session && !spectating && (isDone || current.phase==="finished");
-  const showPixelMessage = attractMode || gameOverMode;
-  const attractText = gameOverMode ? "GAME OVER" : "START GAME";
+  const showPixelMessage = gameOverMode;
+  const attractText = "GAME OVER";
   const screenRows = showPixelMessage
     ? pixelTextRows(attractText, scrollOffset)
     : displayRows;
@@ -655,7 +657,7 @@ export default function GamePage(){
         {screen==="welcome"&&<div className="f64-screen f64-center">
           <div className="f64-overline">ON-CHAIN ARCADE / ROBINHOOD CHAIN</div><h1 className="f64-title">FACE64<span>.</span></h1>
           <p className="f64-sub">FIND YOUR PIXEL. RISK THE RUN. BANK THE POINTS.</p>
-          <div className="f64-home-led" aria-hidden="true">{Array.from({length:64},(_,i)=><i key={i} className={i%9===0||i%7===0?"on":""}/>)}</div>
+          <div className="f64-home-led" aria-hidden="true">{Array.from({length:64},(_,i)=><i key={i} className={lit(preview?.rows?.length===8?preview.rows:START_FACE_ROWS,i)?"on":""}/>)}</div>
           {session?.status==="playing"&&!spectating&&<div className="f64-flow-actions"><button onClick={()=>setScreen("game")}>RESUME MY GAME →</button></div>}
           <div className="f64-flow-actions"><button onClick={()=>{setScreen("collection");setError("");}}>PLAY</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE {activeLive.length?`(${activeLive.length})`:""}</button></div>
           <p className="f64-flow-note">PRACTICE FREE OR ENTER A DAILY OCH TOURNAMENT</p>
@@ -711,14 +713,14 @@ export default function GamePage(){
           <p className="f64-flow-note">{mode==="free"?"PRACTICE SCORE · NOT ON CHAIN":"SCORE RECORDED ON-CHAIN ✓"}</p>}
           <div className="f64-flow-actions"><button className="f64-alt" onClick={()=>setScreen("leaderboard")}>VIEW LEADERBOARD →</button></div>
         </div>}
-        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderMode==="ranked"?"selected":""} onClick={()=>setLeaderMode("ranked")}>TOURNAMENT</button><button className={leaderMode==="free"?"selected":""} onClick={()=>setLeaderMode("free")}>FREE / AGENTS</button></div><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · {leaderMode==="ranked"?"RANKED RESULTS":"FREE PRACTICE · NO OCH PRIZES"}</p>
+        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderMode==="ranked"?"selected":""} onClick={()=>setLeaderMode("ranked")}>TOURNAMENT</button><button className={leaderMode==="free"?"selected":""} onClick={()=>setLeaderMode("free")}>FREE</button></div><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · {leaderMode==="ranked"?"RANKED RESULTS":"FREE PRACTICE · NO OCH PRIZES"}</p>
           {leaderMode==="ranked"&&leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
           {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
           {leaderInfo.finalized&&leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
           {leaderInfo.finalized&&!leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.resultSubmitted&&!claimInfo.prizeClaimed&&claimInfo.score===BigInt(leaderInfo.winningScore)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimPrize").catch(e=>setError(String(e)))}>CLAIM WINNER PRIZE TO NFT WALLET</button>}
           {leaderInfo.finalized&&!leaderInfo.refundAll&&<p>WINNING SCORE {leaderInfo.winningScore} · {leaderInfo.winnerCount} WINNER(S)</p>}</div>}
           <div className="f64-leader-list">{leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId,leaderMode)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}{entry.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>}</span><strong>{entry.score} PTS</strong></button>):<p>NO COMPLETED RANKED GAMES YET.</p>}</div>
-          <p className="f64-flow-note">LEADERBOARD SHOWS FINISHED SESSIONS, INCLUDING EXPIRED GAMES. ONLY SUBMITTED ON-CHAIN SCORES DETERMINE PRIZES. FREE/AGENT SESSIONS ARE NON-PRIZE PRACTICE. CLAIMS USE THE NFT CURRENTLY SELECTED IN PLAYER SETUP.</p>
+          <p className="f64-flow-note">LEADERBOARD SHOWS FINISHED SESSIONS, INCLUDING EXPIRED GAMES. ONLY SUBMITTED ON-CHAIN SCORES DETERMINE PRIZES. FREE SESSIONS ARE NON-PRIZE PRACTICE. CLAIMS USE THE NFT CURRENTLY SELECTED IN PLAYER SETUP.</p>
           <div className="f64-flow-actions"><button onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
         </div>}
         {screen==="watch"&&!spectating&&<div className="f64-screen"><h2>WATCH LIVE</h2><p className="f64-sub">ACTIVE FACE64 GAMES · TOURNAMENT AND FREE</p>
@@ -727,7 +729,6 @@ export default function GamePage(){
         </div>}
         {error&&<div className={styles.error} role="alert">{error}</div>}
       </section>
-      <p className="f64-flow-footer">HOODJOURNEY: PLAY RECORDS ARE NOT YET ATTESTED ON-CHAIN · FACE64 MAINNET PILOT · CHANCE-BASED SERVER ROULETTE IS NOT INDEPENDENTLY VERIFIABLE · TESTING ONLY</p>
     </main>
   </div>;
   /* eslint-enable react-hooks/refs */
