@@ -134,6 +134,35 @@ function pixelTextRows(text: string, offset: number): number[] {
 }
 
 
+// Reproduce the ranked/demo daily board selection for archival leaderboard cards.
+async function dailyFaceIds(day: string): Promise<number[]> {
+  const digest = async (input: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)));
+  const hex = (data: Uint8Array) => Array.from(data, v => v.toString(16).padStart(2, "0")).join("");
+  const seed = hex(await digest(`FACE64-V1-CHALLENGE|4663|${day}`));
+  const numbers: number[] = [];
+  const addNumbers = (bytes: Uint8Array) => {
+    for (let i=0;i<bytes.length;i+=4) numbers.push((bytes[i]*16777216+(bytes[i+1]<<16)+(bytes[i+2]<<8)+bytes[i+3])>>>0);
+  };
+  addNumbers(await digest(`${seed}|boards`));
+  const ids: number[] = [];
+  let n=0;
+  while(ids.length<8){
+    if(n>=numbers.length) addNumbers(await digest(`${seed}|${n}`));
+    const id=(numbers[n++]%229)+1;
+    if(!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+function utcDayOffset(day: string, offset: number): string {
+  return new Date(Date.parse(`${day}T00:00:00.000Z`) + offset*86400000).toISOString().slice(0,10);
+}
+function poolLabel(value: string): string {
+  const whole=BigInt(value);
+  const integer=whole/1000000000000000000n;
+  const decimal=(whole%1000000000000000000n).toString().padStart(18,"0").slice(0,2).replace(/0+$/,"");
+  return integer.toLocaleString("en-US")+(decimal?`.${decimal}`:"");
+}
+
 export default function GamePage(){
   type Screen = "welcome" | "collection" | "player" | "mode" | "entry" | "game" | "result" | "leaderboard" | "watch";
   type Mode = "free" | "ranked";
@@ -171,6 +200,11 @@ export default function GamePage(){
   const [demoLive,setDemoLive]=useState<LiveSession[]>([]);
   const [leaders,setLeaders]=useState<Entry[]>([]);
   const [leaderMode,setLeaderMode]=useState<Mode>("ranked");
+  const [leaderBoards,setLeaderBoards]=useState<Array<{id:number; artwork:Artwork}>>([]);
+  const [leaderBoardsLoading,setLeaderBoardsLoading]=useState(false);
+  const [exportingLeaderboard,setExportingLeaderboard]=useState(false);
+  const [leaderLoading,setLeaderLoading]=useState(false);
+  const [leaderError,setLeaderError]=useState("");
   const [watchMode,setWatchMode]=useState<Mode>("ranked");
   const [scrollOffset,setScrollOffset]=useState(8);
   const [wallet,setWallet]=useState<`0x${string}`|null>(null);
@@ -185,6 +219,9 @@ export default function GamePage(){
   const sessionRef=useRef<Session|null>(null);
   const spectatorRef=useRef(false);
   const todayDay=now ? new Date(now).toISOString().slice(0,10) : "";
+  const weekDays=todayDay?Array.from({length:7},(_,i)=>utcDayOffset(todayDay,-i)):[];
+  const leaderEnd=leaderInfo?Date.parse(leaderInfo.endTime):0;
+  const leaderState=leaderMode==="free"?"FREE PRACTICE · NO PRIZES":!leaderInfo?"LOADING…":leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<leaderEnd?`LIVE · ${dayClock(leaderEnd-now)} LEFT`:"READY TO SETTLE";
   const frame=spectating&&replay.length?replay[Math.min(replayIndex,replay.length-1)]:null;
   const current= frame?{...defaultState,round:frame.round,faceId:frame.faceId,rows:frame.rows,totalPoints:frame.totalPoints,roundPoints:frame.roundPoints}:session?.state ?? defaultState;
   const displayRows=frame?frame.rows:session?.state.rows?.length===8?session.state.rows:(preview?.rows ?? START_FACE_ROWS);
@@ -293,17 +330,52 @@ export default function GamePage(){
     return ()=>window.clearInterval(id);
   },[spectating,replay.length,session?.sessionId,session?.status,syncPublic,watchMode]);
 
+  // Keep live games and the selected leaderboard independent: a leaderboard error
+  // must never take the spectator feed down with it.
   useEffect(()=>{
+    let cancelled=false;
     const update=async()=>{
-      if(!leaderDay)return;
-      try{
-        const [a,b,c]=await Promise.all([readJSON<{sessions:LiveSession[]}>(`${API}/live`),readJSON<{entries:Entry[]}>(`${leaderMode==="free"?"https://api.onchainhoodies.xyz/v1/face64/demo":API}/leaderboard?day=${leaderDay}`),readJSON<{sessions:LiveSession[]}>(`https://api.onchainhoodies.xyz/v1/face64/demo/live`)]);
-        if(mounted.current){setLive(a.sessions);setLeaders(b.entries);setDemoLive(c.sessions);}
-      }catch{/* Keep game playable if spectator feed is unavailable. */}
+      const [a,c]=await Promise.allSettled([
+        readJSON<{sessions:LiveSession[]}>(`${API}/live`),
+        readJSON<{sessions:LiveSession[]}>(`https://api.onchainhoodies.xyz/v1/face64/demo/live`)
+      ]);
+      if(cancelled)return;
+      if(a.status==="fulfilled")setLive(a.value.sessions);
+      if(c.status==="fulfilled")setDemoLive(c.value.sessions);
     };
     void update();const id=window.setInterval(()=>void update(),12000);
-    return ()=>window.clearInterval(id);
+    return ()=>{cancelled=true;window.clearInterval(id);};
+  },[]);
+  useEffect(()=>{
+    if(!leaderDay)return;
+    let cancelled=false;
+    const update=async()=>{
+      try{
+        const result=await readJSON<{entries:Entry[]}>(`${leaderMode==="free"?"https://api.onchainhoodies.xyz/v1/face64/demo":API}/leaderboard?day=${leaderDay}`);
+        if(!cancelled){setLeaders(result.entries);setLeaderLoading(false);setLeaderError("");}
+      }catch(e){if(!cancelled){setLeaderLoading(false);setLeaderError(e instanceof Error?e.message:"Leaderboard unavailable");}}
+    };
+    // Defer effect-driven state updates.
+    void Promise.resolve().then(()=>{if(!cancelled){setLeaderLoading(true);setLeaders([]);setLeaderError("");return update();}});
+    const id=window.setInterval(()=>void update(),12000);
+    return ()=>{cancelled=true;window.clearInterval(id);};
   },[leaderDay,leaderMode]);
+  useEffect(()=>{
+    if(screen!=="leaderboard"||!leaderDay)return;
+    let cancelled=false;
+    void Promise.resolve().then(async()=>{
+      if(cancelled)return;
+      setLeaderBoards([]);setLeaderBoardsLoading(true);
+      try{
+        const ids=leaderDay===daily?.day&&daily.faceIds?.length===8?daily.faceIds:await dailyFaceIds(leaderDay);
+        const boards=await Promise.all(ids.map(async(id)=>({id,artwork:await readJSON<Artwork>(`/api/face/${id}`)})));
+        if(boards.some(b=>b.artwork.rows?.length!==8))throw new Error("Invalid board bitmap");
+        if(!cancelled)setLeaderBoards(boards);
+      }catch{if(!cancelled)setLeaderBoards([]);}
+      finally{if(!cancelled)setLeaderBoardsLoading(false);}
+    });
+    return ()=>{cancelled=true;};
+  },[screen,leaderDay,daily]);
 
   const refreshEntry=useCallback(async(walletAddress:`0x${string}`,c:Identity,id:number)=>{
     if(!Number.isInteger(id)||id<(c==="face"?1:0))return;
@@ -627,6 +699,69 @@ export default function GamePage(){
   const remaining=deadline && now?Math.max(0,deadline-now):null;
   const dailyRemaining=daily&&now?Math.max(0,Date.parse(daily.tournamentEnd)-now):null;
   const displayName=(kind:Identity,id:number)=>`${kind==="face"?"FACE":"HOODIE"} #${id}`;
+  const exportLeaderboardPNG=async()=>{
+    if(exportingLeaderboard||leaderLoading||leaderBoards.length!==8||leaderError||!leaderDay||(leaderMode==="ranked"&&!leaderInfo))return;
+    setExportingLeaderboard(true);setError("");
+    try{
+      try{await document.fonts.load('24px "Departure Mono"');}catch{/* fallback */}
+      // Limit the share card to the top 15, but leave the interactive leaderboard complete.
+      const shown=leaders.slice(0,15);
+      const width=1200,margin=72,rowHeight=74;
+      const height=850+Math.max(3,shown.length)*rowHeight;
+      const canvas=document.createElement("canvas");canvas.width=width;canvas.height=height;
+      const ctx=canvas.getContext("2d");if(!ctx)throw new Error("Canvas unavailable");
+      ctx.imageSmoothingEnabled=false;
+      ctx.fillStyle=BLACK;ctx.fillRect(0,0,width,height);
+      ctx.strokeStyle=GREEN;ctx.lineWidth=2;ctx.strokeRect(32,32,width-64,height-64);
+      const font='"Departure Mono", monospace';
+      const text=(value:string,x:number,y:number,size:number,align:CanvasTextAlign="left",color=GREEN)=>{
+        ctx.fillStyle=color;ctx.font=`${size}px ${font}`;ctx.textBaseline="top";ctx.textAlign=align;ctx.fillText(value,x,y);
+      };
+      const rule=(y:number)=>{ctx.strokeStyle="#536d24";ctx.beginPath();ctx.moveTo(margin,y);ctx.lineTo(width-margin,y);ctx.stroke();};
+      text("FACE64.",margin,76,72);
+      text("DAILY LEADERBOARD",width-margin,84,25,"right");
+      text(leaderMode==="ranked"?"TOURNAMENT":"FREE PLAY",margin,174,22);
+      text(leaderDay,width-margin,174,22,"right");
+      rule(219);
+      text(leaderMode==="ranked"?`POOL ${poolLabel(leaderInfo!.pool)} OCH`:"FREE PRACTICE",margin,251,47);
+      // A share image is a snapshot; show a static end time, not a stale live countdown.
+      const status=leaderMode==="free"?"NO PRIZES":leaderInfo!.finalized?(leaderInfo!.refundAll?"REFUNDS":"SETTLED"):`ENDS ${leaderInfo!.endTime.slice(0,16).replace("T"," ")} UTC`;
+      text(status,margin,318,19);
+      rule(373);
+      text("8 DAILY GAME LEVELS",margin,394,19);
+      const edge=104,gap=23,startX=Math.round((width-(8*edge+7*gap))/2),topY=448;
+      leaderBoards.forEach(({id,artwork},i)=>{
+        const x=startX+i*(edge+gap),unit=edge/8;
+        ctx.fillStyle=artwork.background??BLACK;ctx.fillRect(x,topY,edge,edge);
+        ctx.strokeStyle="#819d33";ctx.strokeRect(x-2,topY-2,edge+4,edge+4);
+        ctx.fillStyle=artwork.foreground??GREEN;
+        for(let y=0;y<8;y++)for(let col=0;col<8;col++)if((artwork.rows[y]??0)&(128>>col))ctx.fillRect(x+col*unit,topY+y*unit,unit,unit);
+        text(String(i+1),x+edge/2,topY+119,16,"center");
+        text(`#${id}`,x+edge/2,topY+146,14,"center");
+      });
+      rule(649);text(shown.length?`TOP ${shown.length} PLAYERS`:"NO FINISHED GAMES",margin,667,20);
+      shown.forEach((entry,i)=>{
+        const y=721+i*rowHeight;
+        text(String(i+1).padStart(2,"0"),margin+8,y,21);
+        text(displayName(entry.collection,entry.tokenId),margin+90,y,25);
+        if(entry.runner==="bankr")text("BANKR · AGENT-DECLARED",margin+90,y+32,14);
+        text(`${entry.score} PTS`,width-margin-8,y+8,23,"right");
+        rule(y+rowHeight-11);
+      });
+      text("FACE64 / ROBINHOOD CHAIN",margin,height-91,17);
+      text("64FACES.FILTER8.XYZ",width-margin,height-91,17,"right");
+      await new Promise<void>((resolve,reject)=>{
+        canvas.toBlob(blob=>{
+          if(!blob){reject(new Error("PNG export failed"));return;}
+          const url=URL.createObjectURL(blob);const a=document.createElement("a");
+          a.download=`face64-${leaderMode}-${leaderDay}-leaderboard.png`;a.href=url;
+          document.body.appendChild(a);a.click();a.remove();
+          window.setTimeout(()=>URL.revokeObjectURL(url),3000);resolve();
+        },"image/png");
+      });
+    }catch(e){setError(e instanceof Error?e.message:"Could not export leaderboard");}
+    finally{setExportingLeaderboard(false);}
+  };
   const gameBoard=<>
     <div className={styles.hud}><span>{spectating?(frame?`REPLAY · ROUND ${frame.round+1}/8`:"WATCH LIVE"):`ROUND ${session?Math.min(current.round+1,8):1} / 8`}</span><span>FACE #{current.faceId||daily?.faceIds?.[0]||"—"}</span></div>
     <div className="f64-playing">{session?.runner==="bankr"&&<span className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED · </span>}{session?displayName(session.identity.collection,session.identity.tokenId):displayName(collection,tokenId)} · {mode==="free"?"FREE":"TOURNAMENT"}</div>
@@ -659,7 +794,7 @@ export default function GamePage(){
           <p className="f64-sub">FIND YOUR PIXEL. RISK THE RUN. BANK THE POINTS.</p>
           <div className="f64-home-led" aria-hidden="true">{Array.from({length:64},(_,i)=><i key={i} className={lit(preview?.rows?.length===8?preview.rows:START_FACE_ROWS,i)?"on":""}/>)}</div>
           {session?.status==="playing"&&!spectating&&<div className="f64-flow-actions"><button onClick={()=>setScreen("game")}>RESUME MY GAME →</button></div>}
-          <div className="f64-flow-actions"><button onClick={()=>{setScreen("collection");setError("");}}>PLAY</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE {activeLive.length?`(${activeLive.length})`:""}</button></div>
+          <div className="f64-flow-actions f64-welcome-actions"><button onClick={()=>{setScreen("collection");setError("");}}>PLAY</button><button className="f64-alt" onClick={()=>{setScreen("leaderboard");setError("");}}>LEADERBOARD</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE {activeLive.length?`(${activeLive.length})`:""}</button></div>
           <p className="f64-flow-note">PRACTICE FREE OR ENTER A DAILY OCH TOURNAMENT</p>
         </div>}
         {screen==="collection"&&<div className="f64-screen"><h2>CHOOSE COLLECTION</h2><p className="f64-sub">WHICH PLAYER WILL ENTER THE ARCADE?</p>
@@ -713,15 +848,23 @@ export default function GamePage(){
           <p className="f64-flow-note">{mode==="free"?"PRACTICE SCORE · NOT ON CHAIN":"SCORE RECORDED ON-CHAIN ✓"}</p>}
           <div className="f64-flow-actions"><button className="f64-alt" onClick={()=>setScreen("leaderboard")}>VIEW LEADERBOARD →</button></div>
         </div>}
-        {screen==="leaderboard"&&<div className="f64-screen"><h2>DAILY LEADERBOARD</h2><div className="f64-day-toggle"><button className={leaderMode==="ranked"?"selected":""} onClick={()=>setLeaderMode("ranked")}>TOURNAMENT</button><button className={leaderMode==="free"?"selected":""} onClick={()=>setLeaderMode("free")}>FREE</button></div><div className="f64-day-toggle"><button className={leaderDay===todayDay?"selected":""} onClick={()=>{if(todayDay)setLeaderDay(todayDay);}}>TODAY</button><button className={leaderDay!==todayDay?"selected":""} onClick={()=>{if(now)setLeaderDay(new Date(now-86400000).toISOString().slice(0,10));}}>YESTERDAY</button></div><p className="f64-sub">{leaderDay} · {leaderMode==="ranked"?"RANKED RESULTS":"FREE PRACTICE · NO OCH PRIZES"}</p>
-          {leaderMode==="ranked"&&leaderInfo&&<div className="f64-settlement"><p>POOL {Number(BigInt(leaderInfo.pool))/1e18} OCH · {leaderInfo.entrants} ENTRIES · {leaderInfo.results} ON-CHAIN SCORES</p><p>ENDS {new Date(leaderInfo.endTime).toLocaleString()} · {leaderInfo.finalized?(leaderInfo.refundAll?"REFUNDS AVAILABLE":"SETTLED"):now<Date.parse(leaderInfo.endTime)?"LIVE":"READY TO SETTLE"}</p>
-          {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
-          {leaderInfo.finalized&&leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
-          {leaderInfo.finalized&&!leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.resultSubmitted&&!claimInfo.prizeClaimed&&claimInfo.score===BigInt(leaderInfo.winningScore)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimPrize").catch(e=>setError(String(e)))}>CLAIM WINNER PRIZE TO NFT WALLET</button>}
-          {leaderInfo.finalized&&!leaderInfo.refundAll&&<p>WINNING SCORE {leaderInfo.winningScore} · {leaderInfo.winnerCount} WINNER(S)</p>}</div>}
-          <div className="f64-leader-list">{leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId,leaderMode)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}{entry.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>}</span><strong>{entry.score} PTS</strong></button>):<p>NO COMPLETED RANKED GAMES YET.</p>}</div>
-          <p className="f64-flow-note">LEADERBOARD SHOWS FINISHED SESSIONS, INCLUDING EXPIRED GAMES. ONLY SUBMITTED ON-CHAIN SCORES DETERMINE PRIZES. FREE SESSIONS ARE NON-PRIZE PRACTICE. CLAIMS USE THE NFT CURRENTLY SELECTED IN PLAYER SETUP.</p>
-          <div className="f64-flow-actions"><button onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
+        {screen==="leaderboard"&&<div className="f64-screen f64-leader-screen">
+          <h2>DAILY LEADERBOARD</h2>
+          <div className="f64-board-tabs" role="group" aria-label="Leaderboard mode"><button className={leaderMode==="ranked"?"selected":""} onClick={()=>setLeaderMode("ranked")}>TOURNAMENT</button><button className={leaderMode==="free"?"selected":""} onClick={()=>setLeaderMode("free")}>FREE PLAY</button></div>
+          <div className="f64-week-tabs" role="group" aria-label="Choose leaderboard day">{weekDays.map((day,i)=><button key={day} className={leaderDay===day?"selected":""} title={day} aria-label={`Day ${i+1}: ${day}`} aria-pressed={leaderDay===day} onClick={()=>setLeaderDay(day)}>{i+1}</button>)}</div>
+          <p className="f64-week-date">{leaderDay} <span>· 1 TODAY / 7 SIX DAYS AGO · UTC</span></p>
+          <div className="f64-pool-panel"><span className="f64-pool-eyebrow">{leaderMode==="ranked"?"DAILY PRIZE POOL":"PRACTICE MODE"}</span><div className="f64-pool-value">{leaderMode==="free"?"FREE PLAY":leaderInfo?`${poolLabel(leaderInfo.pool)} OCH`:"— OCH"}</div><div className="f64-pool-clock">{leaderState}</div></div>
+          <div className="f64-levels-label">8 DAILY GAME LEVELS</div>
+          <div className="f64-levels">{leaderBoards.length===8?leaderBoards.map(({id,artwork},i)=><div className="f64-level" key={`${leaderDay}-${id}`} title={`Round ${i+1} · Face #${id}`}><div className="f64-level-pixels">{Array.from({length:64},(_,cell)=><i key={cell} style={{backgroundColor:lit(artwork.rows,cell)?(artwork.foreground??GREEN):(artwork.background??BLACK)}}/>)}</div><span>{i+1}</span><small>#{id}</small></div>):<p>{leaderBoardsLoading?"LOADING DAILY LEVELS…":"DAILY LEVELS UNAVAILABLE"}</p>}</div>
+          <div className="f64-leader-list">{leaderLoading?<p>LOADING SCORES…</p>:leaderError?<p role="alert">{leaderError}</p>:leaders.length?leaders.map((entry,i)=><button key={entry.sessionId} onClick={()=>watch(entry.sessionId,leaderMode)}><span>{String(i+1).padStart(2,"0")}</span><span>{displayName(entry.collection,entry.tokenId)}{entry.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>}</span><strong>{entry.score} PTS</strong></button>):<p>NO FINISHED GAMES FOR THIS DAY.</p>}</div>
+          {leaderMode==="ranked"&&leaderInfo&&<div className="f64-settlement-actions">
+            {!leaderInfo.finalized&&now>=Date.parse(leaderInfo.endTime)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("finalize").catch(e=>setError(String(e)))}>SETTLE TOURNAMENT</button>}
+            {leaderInfo.finalized&&leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.joined&&!claimInfo.refundClaimed&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimRefund").catch(e=>setError(String(e)))}>CLAIM REFUND · ORIGINAL PAYER</button>}
+            {leaderInfo.finalized&&!leaderInfo.refundAll&&selectedClaimReady&&claimInfo?.resultSubmitted&&!claimInfo.prizeClaimed&&claimInfo.score===BigInt(leaderInfo.winningScore)&&<button disabled={busy} className="f64-wideButton" onClick={()=>void onchainTournamentAction("claimPrize").catch(e=>setError(String(e)))}>CLAIM WINNER PRIZE TO NFT WALLET</button>}
+            {leaderInfo.finalized&&!leaderInfo.refundAll&&<p>WINNING SCORE {leaderInfo.winningScore} · {leaderInfo.winnerCount} WINNER(S)</p>}
+          </div>}
+          <p className="f64-flow-note">FREE SCORES ARE FOR PRACTICE. TOURNAMENT PRIZES USE SUBMITTED ON-CHAIN SCORES. CLAIMS USE THE NFT SELECTED IN PLAYER SETUP.</p>
+          <div className="f64-leader-buttons"><button disabled={exportingLeaderboard||leaderBoards.length!==8||leaderLoading||!!leaderError||(leaderMode==="ranked"&&!leaderInfo)} onClick={()=>void exportLeaderboardPNG()}>{exportingLeaderboard?"PREPARING PNG…":"↓ EXPORT LEADERBOARD PNG"}</button><button className="f64-alt" onClick={resetFlow}>PLAY AGAIN</button><button className="f64-alt" onClick={()=>setScreen("watch")}>WATCH LIVE</button></div>
         </div>}
         {screen==="watch"&&!spectating&&<div className="f64-screen"><h2>WATCH LIVE</h2><p className="f64-sub">ACTIVE FACE64 GAMES · TOURNAMENT AND FREE</p>
           <div className="f64-leader-list">{activeLive.length?activeLive.map(item=><button key={item.sessionId} onClick={()=>watch(item.sessionId,item.liveMode)}><span>●</span><span>{displayName(item.collection,item.tokenId)}{item.runner==="bankr"&&<small className="f64-agent-tag">🤖 BANKR · AGENT-DECLARED</small>} · ROUND {Math.min(item.state.round+1,8)}/8</span><strong>{item.state.totalPoints} PTS</strong></button>):<p>NO LIVE GAMES RIGHT NOW.</p>}</div>

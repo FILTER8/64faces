@@ -189,3 +189,33 @@
 .f64-agent-tag{display:inline-block;color:#ccff00;font-size:9px;letter-spacing:.02em;margin-left:6px;line-height:1.6}
 .f64-leader-list small.f64-agent-tag{display:block;margin-left:0;color:#a9cf5c}
 .f64-day-toggle{flex-wrap:wrap}
+
+/* FACE64 weekly arcade leaderboard and share-card controls. */
+.f64-welcome-actions{grid-template-columns:repeat(3,minmax(0,1fr));max-width:620px}
+.f64-welcome-actions button{font-size:clamp(10px,2vw,13px)}
+.f64-board-tabs{display:grid;grid-template-columns:1fr 1fr;max-width:510px;margin:22px auto 16px;border-bottom:1px solid #678321;gap:2px}
+.f64-board-tabs button{border:1px solid #50691a;border-bottom:0;background:#0a1106;color:#b9d585;min-height:53px;padding:9px 12px;font-size:13px}
+.f64-board-tabs button.selected{background:#ccff00;color:#061000;border-color:#ccff00}
+.f64-week-tabs{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));max-width:510px;gap:7px;margin:12px auto 10px}
+.f64-week-tabs button{border:1px solid #556e21;background:transparent;color:#ccff00;aspect-ratio:1;min-width:0;font-size:14px}
+.f64-week-tabs button.selected{background:#ccff00;color:#000;border-color:#ccff00}
+.f64-week-date{text-align:center;font-size:11px;color:#ccff00;margin:7px auto 20px}
+.f64-week-date span{color:#8ca65f;font-size:9px}
+.f64-pool-panel{border-top:1px solid #566d28;border-bottom:1px solid #566d28;padding:26px 5px 27px;text-align:center;margin:15px 0 22px;background:#060b03}
+.f64-pool-eyebrow{color:#9fb87b;font-size:10px;letter-spacing:2px}
+.f64-pool-value{font-size:clamp(32px,6vw,55px);line-height:1.35;color:#ccff00;margin:8px auto;letter-spacing:-1px}
+.f64-pool-clock{font-size:13px;color:#bddb8e;letter-spacing:1px;font-variant-numeric:tabular-nums}
+.f64-levels-label{text-align:center;color:#a8ca79;letter-spacing:1.5px;font-size:10px;margin:22px auto 12px}
+.f64-levels{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px;max-width:640px;margin:0 auto 26px;text-align:center}
+.f64-levels>p{grid-column:1/-1;color:#9eb376}
+.f64-level{min-width:0;color:#ccff00;font-size:10px}
+.f64-level-pixels{width:100%;aspect-ratio:1;border:1px solid #668321;padding:2px;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(8,minmax(0,1fr));background:#000}
+.f64-level-pixels i{width:100%;height:100%;display:block}
+.f64-level>span,.f64-level>small{display:block;margin-top:3px}.f64-level>small{color:#90ab5e;font-size:8px}
+.f64-leader-screen .f64-leader-list{max-height:660px;max-width:650px;margin:22px auto}
+.f64-settlement-actions{text-align:center}.f64-settlement-actions>p{color:#9db776;font-size:10px}
+.f64-leader-buttons{display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:10px;margin:22px auto 10px}
+.f64-leader-buttons button{min-height:60px;border:2px solid #ccff00;background:#ccff00;color:#000;font-size:clamp(10px,2vw,13px);padding:8px;cursor:pointer}
+.f64-leader-buttons button.f64-alt{background:#090e03;color:#ccff00}
+.f64-leader-buttons button:disabled{opacity:.35;cursor:not-allowed}
+@media(max-width:560px){.f64-welcome-actions{grid-template-columns:1fr}.f64-week-tabs{gap:4px}.f64-week-date span{display:block}.f64-levels{gap:4px}.f64-level-pixels{padding:1px}.f64-pool-clock{font-size:11px}.f64-leader-buttons{grid-template-columns:1fr}}
